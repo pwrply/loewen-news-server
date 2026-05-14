@@ -13,6 +13,8 @@ app.use(express.json());
 // In-memory Cache
 let newsCache = [];
 let lastUpdated = null;
+let delNewsCache = [];
+let delLastUpdated = null;
 
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
@@ -197,12 +199,116 @@ async function scrapeArticle(url) {
   }
 }
 
+// DEL News Scraper
+async function scrapeDelNews() {
+  console.log(`[${new Date().toISOString()}] Scraping DEL news...`);
+  const allItems = [];
+  let b;
+
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
+
+    let nextUrl = 'https://www.penny-del.org/news';
+    let p = 1;
+
+    while (nextUrl && p <= 30) {
+      console.log(`  DEL Seite ${p}: ${nextUrl}`);
+
+      try {
+        await page.goto(nextUrl, { waitUntil: 'networkidle2', timeout: 20000 });
+        await new Promise(r => setTimeout(r, 1500));
+
+        const html = await page.content();
+        const $ = cheerio.load(html);
+
+        // Artikel sammeln
+        let gefunden = 0;
+        $('a[href]').each((i, el) => {
+          const href = $(el).attr('href') || '';
+          const text = $(el).text().trim();
+          if (href.includes('/news/') && href.length > 10 && text.length > 10) {
+            const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+            if (!allItems.find(item => item.url === fullUrl)) {
+              const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
+              const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
+              const finalDatum = datumImTitel ? datumImTitel[1] : '';
+              allItems.push({
+                id: Buffer.from(fullUrl).toString('base64').slice(-32),
+                titel: sauberTitel,
+                url: fullUrl,
+                datum: finalDatum,
+                kategorie: 'DEL',
+                quelle: 'PENNY DEL'
+              });
+              gefunden++;
+            }
+          }
+        });
+
+        // Pagination
+        const paginationMap = {};
+        $('a[href]').each((i, el) => {
+          const href = $(el).attr('href') || '';
+          const decoded = decodeURIComponent(href);
+          const match = decoded.match(/currentPage\]=(\d+)/) || href.match(/page=(\d+)/) || href.match(/\/news\/(\d+)/) || href.match(/seite\/(\d+)/);
+          if (match) {
+            const num = parseInt(match[1]);
+            if (num > p) paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+          }
+        });
+
+        nextUrl = null;
+        const available = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a, b) => a - b);
+        if (available.length > 0) {
+          const nextPage = available[0];
+          nextUrl = paginationMap[nextPage];
+          p = nextPage - 1;
+        }
+
+        console.log(`  -> ${gefunden} DEL Artikel, nächste Seite: ${nextUrl ? 'ja' : 'nein'}`);
+
+      } catch (err) {
+        console.error(`  Fehler DEL Seite ${p}:`, err.message);
+        break;
+      }
+
+      p++;
+      await new Promise(r => setTimeout(r, 800));
+    }
+
+    await page.close();
+
+    if (allItems.length > 0) {
+      delNewsCache = allItems.slice(0, 500);
+      delLastUpdated = new Date().toISOString();
+      console.log(`[OK] ${delNewsCache.length} DEL Artikel gecacht.`);
+    }
+
+  } catch (err) {
+    console.error('[FEHLER] DEL Scraping:', err.message);
+    browser = null;
+  }
+}
+
 // MARK: - API Routen
 
 // GET /api/news
 app.get('/api/news', (req, res) => {
   const kategorie = req.query.kategorie;
-  let items = newsCache;
+  // Löwen + DEL zusammenführen, nach Datum sortieren
+  const combined = [...newsCache, ...delNewsCache].sort((a, b) => {
+    // Datum Format: DD.MM.YYYY
+    const parseDate = d => {
+      if (!d) return 0;
+      const [day, month, year] = d.split('.');
+      return new Date(`${year}-${month}-${day}`).getTime() || 0;
+    };
+    return parseDate(b.datum) - parseDate(a.datum);
+  });
+  let items = combined;
   if (kategorie && kategorie !== 'Alle') {
     items = items.filter(n => n.kategorie === kategorie);
   }
@@ -222,6 +328,11 @@ app.get('/api/article', async (req, res) => {
   }
 });
 
+// GET /api/del-news
+app.get('/api/del-news', (req, res) => {
+  res.json({ status: 'ok', lastUpdated: delLastUpdated, count: delNewsCache.length, items: delNewsCache });
+});
+
 // GET /api/health
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', lastUpdated, cachedItems: newsCache.length, uptime: process.uptime() });
@@ -238,9 +349,11 @@ app.get('/', (req, res) => {
 
 // Cron: Alle 30 Minuten
 cron.schedule('*/30 * * * *', scrapeNews);
+cron.schedule('*/30 * * * *', scrapeDelNews);
 
 // Beim Start scrapen
 scrapeNews();
+scrapeDelNews();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

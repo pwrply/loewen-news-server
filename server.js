@@ -1,6 +1,6 @@
 const express = require('express');
 const cheerio = require('cheerio');
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 const cron = require('node-cron');
 const cors = require('cors');
 
@@ -19,7 +19,7 @@ const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
 function kategorisiere(titel) {
   const t = titel.toLowerCase();
   if (t.includes('vorschau') || t.includes('blick') || t.includes('zu gast') ||
-      t.includes('heimspiel') || t.includes('auswärts')) return 'Vorschau';
+      t.includes('heimspiel') || t.includes('auswaerts') || t.includes('auswärts')) return 'Vorschau';
   if (t.includes('sieg') || t.includes('niederlage') || t.includes('remis') ||
       t.includes('tore') || t.includes('gewinnt') || t.includes('verliert') ||
       t.includes('overtime') || t.includes('siegt') || t.includes('schlägt')) return 'Spielberichte';
@@ -30,94 +30,92 @@ function kategorisiere(titel) {
   return 'Allgemein';
 }
 
-// Scraper Funktion
+// Browser-Instanz wiederverwenden
+let browser = null;
+async function getBrowser() {
+  if (!browser || !browser.connected) {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+  }
+  return browser;
+}
+
+// Scraper mit Puppeteer
 async function scrapeNews() {
-  console.log(`[${new Date().toISOString()}] Scraping news...`);
+  console.log(`[${new Date().toISOString()}] Scraping news mit Puppeteer...`);
+  const allItems = [];
+  let b;
+
   try {
-    const allItems = [];
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
 
-    // Erste 10 Seiten scrapen
-    for (let page = 1; page <= 10; page++) {
-      const url = page === 1 ? NEWS_URL : `${NEWS_URL}?page=${page}`;
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'de-DE,de;q=0.9'
-        },
-        timeout: 10000
-      });
+    for (let p = 1; p <= 15; p++) {
+      const url = p === 1 ? NEWS_URL : `${NEWS_URL}?page=${p}`;
+      console.log(`  Seite ${p}: ${url}`);
 
-      const $ = cheerio.load(response.data);
+      try {
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+        // Kurz warten bis JS gerendert
+        await new Promise(r => setTimeout(r, 1500));
 
-      // Artikel-Links finden
-      $('a').each((i, el) => {
-        const href = $(el).attr('href') || '';
-        const text = $(el).text().trim();
+        const html = await page.content();
+        const $ = cheerio.load(html);
 
-        // Nur News-Artikel URLs
-        if (href.includes('/saison/aktuelles/') && href.length > 20 && text.length > 10) {
-          const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+        let gefunden = 0;
+        $('a').each((i, el) => {
+          const href = $(el).attr('href') || '';
+          const text = $(el).text().trim();
 
-          // Datum aus Eltern-Element suchen
-          const parent = $(el).closest('article, .teaser, .news-item, li, div');
-          const datumText = parent.find('time, .date, .datum').first().text().trim() ||
-                           parent.text().match(/\d{2}\.\d{2}\.\d{4}/)?.[0] || '';
+          if (href.includes('/saison/aktuelles/') && href.length > 20 && text.length > 10) {
+            const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
 
-          // Datum aus Titel extrahieren falls vorhanden (z.B. "10.05.2026 Titel...")
-          const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
-          const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
-          const finalDatum = datumImTitel ? datumImTitel[1] : datumText;
+            const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
+            const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
+            const finalDatum = datumImTitel ? datumImTitel[1] : '';
 
-          // Kategorie-Seiten überspringen (z.B. "Vorschau (153)")
-          if (sauberTitel.match(/^(Vorschau|Spielberichte|Team|Fans|Allgemein)\s*\(/)) return;
+            if (sauberTitel.match(/^(Vorschau|Spielberichte|Team|Fans|Allgemein)\s*\(/)) return;
 
-          if (!allItems.find(item => item.url === fullUrl)) {
-            allItems.push({
-              id: Buffer.from(fullUrl).toString('base64').slice(-32),
-              titel: sauberTitel,
-              url: fullUrl,
-              datum: finalDatum,
-              kategorie: kategorisiere(sauberTitel),
-              quelle: 'Löwen Frankfurt'
-            });
+            if (!allItems.find(item => item.url === fullUrl)) {
+              allItems.push({
+                id: Buffer.from(fullUrl).toString('base64').slice(-32),
+                titel: sauberTitel,
+                url: fullUrl,
+                datum: finalDatum,
+                kategorie: kategorisiere(sauberTitel),
+                quelle: 'Löwen Frankfurt'
+              });
+              gefunden++;
+            }
           }
-        }
-      });
+        });
 
-      // Kurz warten zwischen Requests
-      await new Promise(r => setTimeout(r, 500));
+        console.log(`  -> ${gefunden} neue Artikel auf Seite ${p}`);
+
+        // Wenn keine neuen Artikel – aufhören
+        if (gefunden === 0 && p > 1) {
+          console.log('  Keine weiteren Artikel gefunden, stoppe.');
+          break;
+        }
+
+      } catch (pageErr) {
+        console.error(`  Fehler auf Seite ${p}:`, pageErr.message);
+        break;
+      }
+
+      await new Promise(r => setTimeout(r, 800));
     }
 
-    // Fallback: Wenn keine Links gefunden, Texte parsen
-    if (allItems.length === 0) {
-      console.log('Keine Links gefunden, parse Text-Inhalte...');
-      const response = await axios.get(NEWS_URL, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      const $ = cheerio.load(response.data);
-      const mainText = $('main, #content, .content').text();
-      const lines = mainText.split('\n').map(l => l.trim()).filter(l => l.length > 15);
-
-      const datumRegex = /^(\d{2}\.\d{2}\.\d{4})$/;
-      let currentDatum = '';
-
-      lines.forEach(line => {
-        if (datumRegex.test(line)) {
-          currentDatum = line;
-        } else if (line.length > 20 && currentDatum && !line.match(/^\d/) && line !== currentDatum) {
-          allItems.push({
-            id: Buffer.from(line).toString('base64').slice(0, 16),
-            titel: line,
-            url: NEWS_URL,
-            datum: currentDatum,
-            kategorie: kategorisiere(line),
-            quelle: 'Löwen Frankfurt'
-          });
-          currentDatum = '';
-        }
-      });
-    }
+    await page.close();
 
     if (allItems.length > 0) {
       newsCache = allItems.slice(0, 500);
@@ -129,60 +127,29 @@ async function scrapeNews() {
 
   } catch (err) {
     console.error('[FEHLER] Scraping fehlgeschlagen:', err.message);
+    browser = null;
   }
 }
 
-// MARK: - API Routen
-
-// GET /api/news - Alle News
-app.get('/api/news', (req, res) => {
-  const kategorie = req.query.kategorie;
-  let items = newsCache;
-  if (kategorie && kategorie !== 'Alle') {
-    items = items.filter(n => n.kategorie === kategorie);
-  }
-  res.json({
-    status: 'ok',
-    lastUpdated,
-    count: items.length,
-    items
-  });
-});
-
-// GET /api/article?url=... - Artikel-Inhalt scrapen
-app.get('/api/article', async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: 'url parameter fehlt' });
-
+// Artikel-Inhalt scrapen
+async function scrapeArticle(url) {
+  let b;
   try {
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'de-DE,de;q=0.9'
-      },
-      timeout: 10000
-    });
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 1000));
 
-    const $ = cheerio.load(response.data);
+    const html = await page.content();
+    await page.close();
 
-    // Header/Footer/Nav entfernen
+    const $ = cheerio.load(html);
     $('header, footer, nav, .cookie, [class*="cookie"], [class*="consent"], script, style, iframe').remove();
 
-    // Titel
-    const titel =
-      $('h1').first().text().trim() ||
-      $('article h1, .article h1, .content h1').first().text().trim() ||
-      $('title').text().trim();
+    const titel = $('h1').first().text().trim();
+    const datum = $('time').first().attr('datetime') || $('time').first().text().trim() || $('[class*="date"], [class*="datum"]').first().text().trim() || '';
 
-    // Datum
-    const datum =
-      $('time').first().attr('datetime') ||
-      $('time').first().text().trim() ||
-      $('[class*="date"], [class*="datum"]').first().text().trim() ||
-      '';
-
-    // Bild (erstes großes Bild im Artikel)
     let bild = '';
     $('article img, .article img, .content img, main img').each((i, el) => {
       if (bild) return;
@@ -192,14 +159,11 @@ app.get('/api/article', async (req, res) => {
       }
     });
 
-    // Text-Absätze aus dem Artikel
     const absaetze = [];
     $('article p, .article p, .content p, main p').each((i, el) => {
       const text = $(el).text().trim();
       if (text.length > 30) absaetze.push(text);
     });
-
-    // Fallback: alle p Tags
     if (absaetze.length === 0) {
       $('p').each((i, el) => {
         const text = $(el).text().trim();
@@ -207,48 +171,56 @@ app.get('/api/article', async (req, res) => {
       });
     }
 
-    res.json({
-      status: 'ok',
-      titel,
-      datum,
-      bild,
-      absaetze,
-      url
-    });
+    return { titel, datum, bild, absaetze, url };
 
+  } catch (err) {
+    throw new Error(err.message);
+  }
+}
+
+// MARK: - API Routen
+
+// GET /api/news
+app.get('/api/news', (req, res) => {
+  const kategorie = req.query.kategorie;
+  let items = newsCache;
+  if (kategorie && kategorie !== 'Alle') {
+    items = items.filter(n => n.kategorie === kategorie);
+  }
+  res.json({ status: 'ok', lastUpdated, count: items.length, items });
+});
+
+// GET /api/article?url=...
+app.get('/api/article', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url parameter fehlt' });
+  try {
+    const article = await scrapeArticle(url);
+    res.json({ status: 'ok', ...article });
   } catch (err) {
     console.error('[FEHLER] Article scraping:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/health - Status
+// GET /api/health
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    lastUpdated,
-    cachedItems: newsCache.length,
-    uptime: process.uptime()
-  });
+  res.json({ status: 'ok', lastUpdated, cachedItems: newsCache.length, uptime: process.uptime() });
 });
 
-// GET / - Root
+// GET /
 app.get('/', (req, res) => {
   res.json({
     name: 'Löwen Frankfurt News Server',
-    version: '1.0.0',
-    endpoints: [
-      'GET /api/news',
-      'GET /api/news?kategorie=Spielberichte',
-      'GET /api/health'
-    ]
+    version: '2.0.0',
+    endpoints: ['GET /api/news', 'GET /api/article?url=...', 'GET /api/health']
   });
 });
 
-// Cron: Alle 30 Minuten scrapen
+// Cron: Alle 30 Minuten
 cron.schedule('*/30 * * * *', scrapeNews);
 
-// Beim Start sofort einmal scrapen
+// Beim Start scrapen
 scrapeNews();
 
 const PORT = process.env.PORT || 3000;

@@ -221,7 +221,7 @@ async function scrapeInstagram() {
       id: 'social-insta-1',
       titel: '🏒 GAME DAY! Heute 19:30 Uhr Heimspiel gegen die Füchse!',
       url: 'https://www.instagram.com/loewen_frankfurt',
-      datum: formatiereDeuDatum(14, 5, 2026),
+      datum: '14.05.2026',
       kategorie: 'Social',
       quelle: 'Instagram'
     },
@@ -229,7 +229,7 @@ async function scrapeInstagram() {
       id: 'social-insta-2', 
       titel: 'Danke für den epic Support gestern Nacht 🦁🙌 #LöwenFamily #DEL',
       url: 'https://www.instagram.com/loewen_frankfurt',
-      datum: formatiereDeuDatum(13, 5, 2026),
+      datum: '13.05.2026',
       kategorie: 'Social',
       quelle: 'Instagram'
     },
@@ -237,7 +237,7 @@ async function scrapeInstagram() {
       id: 'social-insta-3',
       titel: '🔴 LIVESCORE: 4:2 gegen München! HIGH FIVE for our boys! 👏',
       url: 'https://www.instagram.com/loewen_frankfurt',
-      datum: formatiereDeuDatum(12, 5, 2026),
+      datum: '12.05.2026',
       kategorie: 'Social',
       quelle: 'Instagram'
     }

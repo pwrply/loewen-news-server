@@ -1,9 +1,10 @@
 const express = require('express');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
 const cron = require('node-cron');
 const cors = require('cors');
+
+const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
 const app = express();
 app.use(cors());
@@ -35,15 +36,9 @@ function kategorisiere(titel) {
 let browser = null;
 async function getBrowser() {
   if (!browser || !browser.connected) {
-    const execPath = process.env.CHROMIUM_PATH ||
-      await (async () => { try { return await chromium.executablePath(); } catch { return null; } })() ||
-      '/usr/bin/chromium' ||
-      '/usr/bin/chromium-browser';
-
     browser = await puppeteer.launch({
-      executablePath: execPath,
+      executablePath: CHROME_PATH,
       args: [
-        ...chromium.args,
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',

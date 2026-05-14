@@ -1,6 +1,7 @@
 const express = require('express');
 const cheerio = require('cheerio');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const cron = require('node-cron');
 const cors = require('cors');
 
@@ -35,13 +36,10 @@ let browser = null;
 async function getBrowser() {
   if (!browser || !browser.connected) {
     browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless
     });
   }
   return browser;

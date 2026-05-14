@@ -1,6 +1,6 @@
 {
   "name": "loewen-news-server",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "News scraper for Loewen Frankfurt",
   "main": "server.js",
   "scripts": {
@@ -13,6 +13,7 @@
     "axios": "^1.6.0",
     "node-cron": "^3.0.3",
     "cors": "^2.8.5",
-    "puppeteer": "^22.0.0"
+    "puppeteer-core": "^22.0.0",
+    "@sparticuz/chromium": "^123.0.0"
   }
 }

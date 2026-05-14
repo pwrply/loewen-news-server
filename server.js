@@ -163,6 +163,7 @@ async function scrapeArticle(url) {
 
     const html = await page.content();
     await page.close();
+    await b.close();
 
     const $ = cheerio.load(html);
     $('header, footer, nav, .cookie, [class*="cookie"], [class*="consent"], script, style, iframe').remove();
@@ -194,6 +195,7 @@ async function scrapeArticle(url) {
     return { titel, datum, bild, absaetze, url };
 
   } catch (err) {
+    if (b) try { await b.close(); } catch (_) {}
     throw new Error(err.message);
   }
 }

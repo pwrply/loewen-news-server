@@ -209,43 +209,6 @@ async function scrapeArticle(url) {
   }
 }
 
-// Instagram Feed Scraper
-let socialCache = [];
-let socialLastUpdated = null;
-
-async function scrapeInstagram() {
-  console.log(`[${new Date().toISOString()}] Scraping Instagram...`);
-  // Instagram erfordert Login -> mit Dummy-Daten füllen
-  socialCache = [
-    {
-      id: 'social-insta-1',
-      titel: '🏒 GAME DAY! Heute 19:30 Uhr Heimspiel gegen die Füchse!',
-      url: 'https://www.instagram.com/loewen_frankfurt',
-      datum: '14.05.2026',
-      kategorie: 'Social',
-      quelle: 'Instagram'
-    },
-    {
-      id: 'social-insta-2', 
-      titel: 'Danke für den epic Support gestern Nacht 🦁🙌 #LöwenFamily #DEL',
-      url: 'https://www.instagram.com/loewen_frankfurt',
-      datum: '13.05.2026',
-      kategorie: 'Social',
-      quelle: 'Instagram'
-    },
-    {
-      id: 'social-insta-3',
-      titel: '🔴 LIVESCORE: 4:2 gegen München! HIGH FIVE for our boys! 👏',
-      url: 'https://www.instagram.com/loewen_frankfurt',
-      datum: '12.05.2026',
-      kategorie: 'Social',
-      quelle: 'Instagram'
-    }
-  ];
-  socialLastUpdated = new Date().toISOString();
-  console.log(`[OK] ${socialCache.length} Social Posts gecacht (Instagram).`);
-}
-
 // DEL News Scraper
 async function scrapeDelNews() {
   console.log(`[${new Date().toISOString()}] Scraping DEL news...`);
@@ -390,7 +353,7 @@ async function scrapeDelNews() {
 app.get('/api/news', (req, res) => {
   const kategorie = req.query.kategorie;
   // Löwen + DEL zusammenführen, nach Datum sortieren
-  const combined = [...newsCache, ...delNewsCache, ...socialCache].sort((a, b) => {
+  const combined = [...newsCache, ...delNewsCache].sort((a, b) => {
     // Datum Format: DD.MM.YYYY
     const parseDate = d => {
       if (!d) return 0;
@@ -428,14 +391,11 @@ app.get('/api/del-news', (req, res) => {
 app.post('/api/reset-cache', async (req, res) => {
   newsCache = [];
   delNewsCache = [];
-  socialCache = [];
   lastUpdated = null;
   delLastUpdated = null;
-  socialLastUpdated = null;
   res.json({ status: 'ok', message: 'Cache geleert, scraping läuft neu...' });
   scrapeNews();
   scrapeDelNews();
-  scrapeInstagram();
 });
 
 // GET /api/health
@@ -455,12 +415,10 @@ app.get('/', (req, res) => {
 // Cron: Alle 30 Minuten
 cron.schedule('*/30 * * * *', scrapeNews);
 cron.schedule('*/30 * * * *', scrapeDelNews);
-cron.schedule('0 * * * *', scrapeInstagram);   // jede Stunde
 
 // Beim Start scrapen (versetzt um Memory-Spitzen zu vermeiden)
 scrapeNews();
 setTimeout(() => scrapeDelNews(), 60000);   // nach 1 Min
-setTimeout(() => scrapeInstagram(), 120000);    // nach 2 Min
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

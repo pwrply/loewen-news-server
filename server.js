@@ -73,8 +73,8 @@ async function scrapeNews() {
       console.log(`  Seite ${p}: ${nextUrl}`);
 
       try {
-        await page.goto(nextUrl, { waitUntil: 'networkidle2', timeout: 20000 });
-        await new Promise(r => setTimeout(r, 1500));
+        await page.goto(nextUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await new Promise(r => setTimeout(r, 800));
 
         const html = await page.content();
         const $ = cheerio.load(html);
@@ -231,8 +231,8 @@ async function scrapeDelNews() {
       console.log(`  DEL Seite ${p}: ${nextUrl}`);
 
       try {
-        await page.goto(nextUrl, { waitUntil: 'networkidle2', timeout: 20000 });
-        await new Promise(r => setTimeout(r, 1500));
+        await page.goto(nextUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await new Promise(r => setTimeout(r, 800));
 
         const html = await page.content();
         const $ = cheerio.load(html);

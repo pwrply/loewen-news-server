@@ -171,12 +171,21 @@ async function scrapeArticle(url) {
     const titel = $('h1').first().text().trim();
     const datum = $('time').first().attr('datetime') || $('time').first().text().trim() || $('[class*="date"], [class*="datum"]').first().text().trim() || '';
 
+    // Base URL aus der Artikel-URL ableiten (Löwen vs. DEL)
+    const articleBase = url.startsWith('https://www.penny-del.org') ? 'https://www.penny-del.org' : BASE_URL;
+
     let bild = '';
-    $('article img, .article img, .content img, main img').each((i, el) => {
+    $('article img, .article img, .content img, main img, img').each((i, el) => {
       if (bild) return;
-      const src = $(el).attr('src') || $(el).attr('data-src') || '';
-      if (src && !src.includes('logo') && !src.includes('icon') && !src.includes('avatar')) {
-        bild = src.startsWith('http') ? src : `${BASE_URL}${src}`;
+      const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-lazy-src') || '';
+      if (src && !src.includes('logo') && !src.includes('icon') && !src.includes('avatar') && !src.includes('svg')) {
+        if (src.startsWith('http')) {
+          bild = src;
+        } else if (src.startsWith('//')) {
+          bild = 'https:' + src;
+        } else {
+          bild = `${articleBase}${src.startsWith('/') ? '' : '/'}${src}`;
+        }
       }
     });
 

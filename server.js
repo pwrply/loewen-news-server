@@ -76,18 +76,31 @@ async function scrapeNews() {
         const html = await page.content();
         const $ = cheerio.load(html);
 
-        // Nächste Seite aus Pagination-Link lesen
-        nextUrl = null;
-        const nextPageNum = p + 1;
+        // Alle Pagination-Links sammeln und kleinste unbesuchte Seite nehmen
+        const paginationMap = {};
         $('a[href]').each((i, el) => {
-          if (nextUrl) return;
           const href = $(el).attr('href') || '';
           const decoded = decodeURIComponent(href);
-          if (decoded.includes('currentPage]=' + nextPageNum) || href.includes('currentPage%5D=' + nextPageNum)) {
-            nextUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-            console.log(`  Seite ${nextPageNum} URL: ${nextUrl}`);
+          const match = decoded.match(/currentPage\]=(\d+)/);
+          if (match) {
+            const num = parseInt(match[1]);
+            paginationMap[num] = href.startsWith('http') ? href : `${BASE_URL}${href}`;
           }
         });
+
+        // Nächste Seite = kleinste Seitennummer größer als p
+        nextUrl = null;
+        const availablePages = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a,b) => a-b);
+        if (availablePages.length > 0) {
+          const nextPage = availablePages[0];
+          nextUrl = paginationMap[nextPage];
+          // Falls Seiten übersprungen werden: alle dazwischen auch besuchen
+          if (nextPage > p + 1) {
+            console.log(`  [WARN] Seite ${p+1} bis ${nextPage-1} fehlen in Pagination`);
+          }
+          console.log(`  Nächste Seite: ${nextPage} -> ${nextUrl}`);
+          p = nextPage - 1; // wird am Ende des Loops erhöht
+        }
 
         let gefunden = 0;
         $('a').each((i, el) => {

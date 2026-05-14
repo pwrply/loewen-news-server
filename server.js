@@ -35,11 +35,22 @@ function kategorisiere(titel) {
 let browser = null;
 async function getBrowser() {
   if (!browser || !browser.connected) {
+    const execPath = process.env.CHROMIUM_PATH ||
+      await (async () => { try { return await chromium.executablePath(); } catch { return null; } })() ||
+      '/usr/bin/chromium' ||
+      '/usr/bin/chromium-browser';
+
     browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless
+      executablePath: execPath,
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process'
+      ],
+      headless: true
     });
   }
   return browser;

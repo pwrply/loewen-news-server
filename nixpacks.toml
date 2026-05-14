@@ -1,0 +1,27 @@
+[phases.setup]
+nixPkgs = [
+  "nodejs_20",
+  "chromium",
+  "nss",
+  "nspr",
+  "atk",
+  "cups",
+  "libdrm",
+  "libxkbcommon",
+  "libgbm",
+  "xorg.libX11",
+  "xorg.libXcomposite",
+  "xorg.libXdamage",
+  "xorg.libXext",
+  "xorg.libXfixes",
+  "xorg.libXrandr",
+  "xorg.libxcb",
+  "pango",
+  "cairo",
+  "glib",
+  "alsa-lib"
+]
+
+[variables]
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+CHROMIUM_PATH = "/run/current-system/sw/bin/chromium"

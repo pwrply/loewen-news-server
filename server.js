@@ -64,13 +64,21 @@ async function scrapeNews() {
           const datumText = parent.find('time, .date, .datum').first().text().trim() ||
                            parent.text().match(/\d{2}\.\d{2}\.\d{4}/)?.[0] || '';
 
+          // Datum aus Titel extrahieren falls vorhanden (z.B. "10.05.2026 Titel...")
+          const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
+          const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
+          const finalDatum = datumImTitel ? datumImTitel[1] : datumText;
+
+          // Kategorie-Seiten überspringen (z.B. "Vorschau (153)")
+          if (sauberTitel.match(/^(Vorschau|Spielberichte|Team|Fans|Allgemein)\s*\(/)) return;
+
           if (!allItems.find(item => item.url === fullUrl)) {
             allItems.push({
-              id: Buffer.from(fullUrl).toString('base64').slice(0, 16),
-              titel: text,
+              id: Buffer.from(fullUrl).toString('base64').slice(-32),
+              titel: sauberTitel,
               url: fullUrl,
-              datum: datumText,
-              kategorie: kategorisiere(text),
+              datum: finalDatum,
+              kategorie: kategorisiere(sauberTitel),
               quelle: 'Löwen Frankfurt'
             });
           }
@@ -139,6 +147,79 @@ app.get('/api/news', (req, res) => {
     count: items.length,
     items
   });
+});
+
+// GET /api/article?url=... - Artikel-Inhalt scrapen
+app.get('/api/article', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url parameter fehlt' });
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'de-DE,de;q=0.9'
+      },
+      timeout: 10000
+    });
+
+    const $ = cheerio.load(response.data);
+
+    // Header/Footer/Nav entfernen
+    $('header, footer, nav, .cookie, [class*="cookie"], [class*="consent"], script, style, iframe').remove();
+
+    // Titel
+    const titel =
+      $('h1').first().text().trim() ||
+      $('article h1, .article h1, .content h1').first().text().trim() ||
+      $('title').text().trim();
+
+    // Datum
+    const datum =
+      $('time').first().attr('datetime') ||
+      $('time').first().text().trim() ||
+      $('[class*="date"], [class*="datum"]').first().text().trim() ||
+      '';
+
+    // Bild (erstes großes Bild im Artikel)
+    let bild = '';
+    $('article img, .article img, .content img, main img').each((i, el) => {
+      if (bild) return;
+      const src = $(el).attr('src') || $(el).attr('data-src') || '';
+      if (src && !src.includes('logo') && !src.includes('icon') && !src.includes('avatar')) {
+        bild = src.startsWith('http') ? src : `${BASE_URL}${src}`;
+      }
+    });
+
+    // Text-Absätze aus dem Artikel
+    const absaetze = [];
+    $('article p, .article p, .content p, main p').each((i, el) => {
+      const text = $(el).text().trim();
+      if (text.length > 30) absaetze.push(text);
+    });
+
+    // Fallback: alle p Tags
+    if (absaetze.length === 0) {
+      $('p').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.length > 30) absaetze.push(text);
+      });
+    }
+
+    res.json({
+      status: 'ok',
+      titel,
+      datum,
+      bild,
+      absaetze,
+      url
+    });
+
+  } catch (err) {
+    console.error('[FEHLER] Article scraping:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/health - Status

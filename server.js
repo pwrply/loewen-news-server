@@ -249,7 +249,19 @@ async function scrapeDelNews() {
             if (!allItems.find(item => item.url === fullUrl)) {
               const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
               const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
-              const finalDatum = datumImTitel ? datumImTitel[1] : '';
+              // Datum aus Titel, oder aus URL (z.B. /news/2026/05/14/...), oder heute
+              let finalDatum = datumImTitel ? datumImTitel[1] : '';
+              if (!finalDatum) {
+                const urlDatum = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
+                if (urlDatum) {
+                  finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
+                } else {
+                  const now = new Date();
+                  const d = String(now.getDate()).padStart(2,'0');
+                  const m = String(now.getMonth()+1).padStart(2,'0');
+                  finalDatum = `${d}.${m}.${now.getFullYear()}`;
+                }
+              }
               allItems.push({
                 id: Buffer.from(fullUrl).toString('base64').slice(-32),
                 titel: sauberTitel,

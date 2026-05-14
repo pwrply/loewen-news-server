@@ -15,6 +15,8 @@ let newsCache = [];
 let lastUpdated = null;
 let delNewsCache = [];
 let delLastUpdated = null;
+let presseCache = [];
+let presseLastUpdated = null;
 
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
@@ -22,6 +24,7 @@ const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
 // Kategorie aus Titel ableiten
 function kategorisiere(titel) {
   const t = titel.toLowerCase();
+  if (t.includes('presse') || t.includes('bild') || t.includes('fn') || t.includes('faz') || t.includes('aktuel')) return 'Presse';
   if (t.includes('vorschau') || t.includes('blick') || t.includes('zu gast') ||
       t.includes('heimspiel') || t.includes('auswaerts') || t.includes('auswärts')) return 'Vorschau';
   if (t.includes('sieg') || t.includes('niederlage') || t.includes('remis') ||
@@ -347,13 +350,125 @@ async function scrapeDelNews() {
   }
 }
 
+// Presse Scraper - Lokale Sportnachrichten (Bild, FNP, EishockeyNews, FAZ, Offenbacher Post)
+async function scrapePresse() {
+  console.log(`[${new Date().toISOString()}] Scraping Presse...`);
+  const allItems = [];
+  let b;
+
+  // Presse-URLs mit Löwen Frankfurt News
+  const sources = [
+    {
+      name: 'Bild',
+      url: 'https://www.bild.de/themen/organisationen/frankfurt-loewen/sport-nachrichten-news-fotos-videos-53500432.bild.html'
+    },
+    {
+      name: 'FNP',
+      url: 'https://www.fnp.de/sport/eishockey/loewen-frankfurt'
+    },
+    {
+      name: 'EishockeyNews',
+      url: 'https://www.eishockeynews.de/verein/loewen-frankfurt/news'
+    },
+    {
+      name: 'FAZ',
+      url: 'https://www.faz.net/aktuell/sport/rhein-main-sport/loewen-frankfurt/'
+    },
+    {
+      name: 'Offenbacher Post',
+      url: 'https://www.op-online.de/sport/eishockey/loewen-frankfurt'
+    },
+    {
+      name: 'Hessenschau',
+      url: 'https://www.hessenschau.de/sport/eishockey'
+    }
+  ];
+
+  try {
+    b = await getBrowser();
+
+    for (const source of sources) {
+      console.log(`  Quelle: ${source.name}`);
+      try {
+        const page = await b.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+        await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
+
+        await page.goto(source.url, { waitUntil: 'networkidle2', timeout: 20000 });
+        await new Promise(r => setTimeout(r, 2000));
+
+        const html = await page.content();
+        const $ = cheerio.load(html);
+
+        // Artikel sammeln
+        $('a[href]').each((i, el) => {
+          const href = $(el).attr('href') || '';
+          const text = $(el).text().trim();
+
+          // Nur Artikel-Links mit Löwen-Bezug
+          if (!href.includes('loewen') && !text.toLowerCase().includes('löwen') && !text.toLowerCase().includes('loewen')) {
+            return;
+          }
+
+          if (href.length > 20 && text.length > 15 && !href.includes('#')) {
+            const fullUrl = href.startsWith('http') ? href : `https://${source.url}${href}`;
+
+            // Datum aus Text oder URL extrahieren
+            let finalDatum = '';
+            const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
+            if (datumImTitel) {
+              finalDatum = datumImTitel[1];
+            } else {
+              const urlDatum = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
+              if (urlDatum) {
+                finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
+              }
+            }
+
+            // Nur Artikel ohne bestehende URL
+            if (!allItems.find(item => item.url === fullUrl)) {
+              const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
+              
+              allItems.push({
+                id: Buffer.from(fullUrl).toString('base64').slice(-32),
+                titel: sauberTitel,
+                url: fullUrl,
+                datum: finalDatum || '01.01.2020',
+                kategorie: 'Presse',
+                quelle: source.name
+              });
+            }
+          }
+        });
+
+        await page.close();
+
+      } catch (err) {
+        console.error(`  Fehler ${source.name}:`, err.message);
+      }
+    }
+
+    await b.close();
+
+    if (allItems.length > 0) {
+      presseCache = allItems.slice(0, 300);
+      presseLastUpdated = new Date().toISOString();
+      console.log(`[OK] ${presseCache.length} Presse-Artikel gecacht.`);
+    }
+
+  } catch (err) {
+    console.error('[FEHLER] Presse Scraping:', err.message);
+    if (b) try { await b.close(); } catch (_) {}
+  }
+}
+
 // MARK: - API Routen
 
 // GET /api/news
 app.get('/api/news', (req, res) => {
   const kategorie = req.query.kategorie;
   // Löwen + DEL zusammenführen, nach Datum sortieren
-  const combined = [...newsCache, ...delNewsCache].sort((a, b) => {
+  const combined = [...newsCache, ...delNewsCache, ...presseCache].sort((a, b) => {
     // Datum Format: DD.MM.YYYY
     const parseDate = d => {
       if (!d) return 0;
@@ -391,11 +506,14 @@ app.get('/api/del-news', (req, res) => {
 app.post('/api/reset-cache', async (req, res) => {
   newsCache = [];
   delNewsCache = [];
+  presseCache = [];
   lastUpdated = null;
   delLastUpdated = null;
+  presseLastUpdated = null;
   res.json({ status: 'ok', message: 'Cache geleert, scraping läuft neu...' });
   scrapeNews();
   scrapeDelNews();
+  scrapePresse();
 });
 
 // GET /api/health
@@ -415,10 +533,12 @@ app.get('/', (req, res) => {
 // Cron: Alle 30 Minuten
 cron.schedule('*/30 * * * *', scrapeNews);
 cron.schedule('*/30 * * * *', scrapeDelNews);
+cron.schedule('*/30 * * * *', scrapePresse);
 
 // Beim Start scrapen (versetzt um Memory-Spitzen zu vermeiden)
 scrapeNews();
 setTimeout(() => scrapeDelNews(), 60000);   // nach 1 Min
+setTimeout(() => scrapePresse(), 120000);    // nach 2 Min
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

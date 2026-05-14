@@ -209,6 +209,86 @@ async function scrapeArticle(url) {
   }
 }
 
+// X/Twitter Feed Scraper
+let xCache = [];
+let xLastUpdated = null;
+
+async function scrapeXFeed() {
+  console.log(`[${new Date().toISOString()}] Scraping X Feed...`);
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    // Cookie-Banner akzeptieren falls vorhanden
+    await page.goto('https://x.com/loewen_frankfurt', { waitUntil: 'networkidle2', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Cookie-Banner wegklicken falls vorhanden
+    try {
+      const cookieBtn = await page.$('[data-testid="confirmationSheetConfirm"]');
+      if (cookieBtn) await cookieBtn.click();
+      await new Promise(r => setTimeout(r, 1000));
+    } catch (_) {}
+
+    // Tweets extrahieren
+    const tweets = await page.evaluate(() => {
+      const results = [];
+      const articles = document.querySelectorAll('article[data-testid="tweet"]');
+      articles.forEach(article => {
+        try {
+          const textEl = article.querySelector('[data-testid="tweetText"]');
+          const timeEl = article.querySelector('time');
+          const imgEl = article.querySelector('[data-testid="tweetPhoto"] img');
+          const linkEl = article.querySelector('a[href*="/status/"]');
+
+          const text = textEl ? textEl.innerText.trim() : '';
+          const datetime = timeEl ? timeEl.getAttribute('datetime') : '';
+          const bild = imgEl ? imgEl.src : '';
+          const tweetUrl = linkEl ? 'https://x.com' + linkEl.getAttribute('href') : '';
+
+          if (text && tweetUrl) {
+            results.push({ text, datetime, bild, tweetUrl });
+          }
+        } catch (_) {}
+      });
+      return results;
+    });
+
+    await page.close();
+    await b.close();
+
+    if (tweets.length > 0) {
+      xCache = tweets.map(t => {
+        // Datum formatieren
+        let datum = '';
+        if (t.datetime) {
+          const d = new Date(t.datetime);
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = d.getFullYear();
+          datum = `${dd}.${mm}.${yyyy}`;
+        }
+        return {
+          id: Buffer.from(t.tweetUrl).toString('base64').slice(-32),
+          titel: t.text.slice(0, 200),
+          url: t.tweetUrl,
+          datum,
+          kategorie: 'Social',
+          quelle: 'X / Twitter',
+          bild: t.bild
+        };
+      });
+      xLastUpdated = new Date().toISOString();
+      console.log(`[OK] ${xCache.length} Tweets gecacht.`);
+    }
+  } catch (err) {
+    console.error('[FEHLER] X Scraping:', err.message);
+    if (b) try { await b.close(); } catch (_) {}
+  }
+}
+
 // DEL News Scraper
 async function scrapeDelNews() {
   console.log(`[${new Date().toISOString()}] Scraping DEL news...`);
@@ -353,7 +433,7 @@ async function scrapeDelNews() {
 app.get('/api/news', (req, res) => {
   const kategorie = req.query.kategorie;
   // Löwen + DEL zusammenführen, nach Datum sortieren
-  const combined = [...newsCache, ...delNewsCache].sort((a, b) => {
+  const combined = [...newsCache, ...delNewsCache, ...xCache].sort((a, b) => {
     // Datum Format: DD.MM.YYYY
     const parseDate = d => {
       if (!d) return 0;
@@ -391,11 +471,14 @@ app.get('/api/del-news', (req, res) => {
 app.post('/api/reset-cache', async (req, res) => {
   newsCache = [];
   delNewsCache = [];
+  xCache = [];
   lastUpdated = null;
   delLastUpdated = null;
+  xLastUpdated = null;
   res.json({ status: 'ok', message: 'Cache geleert, scraping läuft neu...' });
   scrapeNews();
   scrapeDelNews();
+  scrapeXFeed();
 });
 
 // GET /api/health
@@ -415,10 +498,12 @@ app.get('/', (req, res) => {
 // Cron: Alle 30 Minuten
 cron.schedule('*/30 * * * *', scrapeNews);
 cron.schedule('*/30 * * * *', scrapeDelNews);
+cron.schedule('*/60 * * * *', scrapeXFeed);
 
 // Beim Start scrapen
 scrapeNews();
 scrapeDelNews();
+scrapeXFeed();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

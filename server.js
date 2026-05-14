@@ -34,23 +34,21 @@ function kategorisiere(titel) {
   return 'Allgemein';
 }
 
-// Browser-Instanz wiederverwenden
-let browser = null;
+// Browser-Instanz: immer frisch starten, nach Scraping sofort schließen
 async function getBrowser() {
-  if (!browser || !browser.connected) {
-    browser = await puppeteer.launch({
-      executablePath: CHROME_PATH,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process'
-      ],
-      headless: true
-    });
-  }
-  return browser;
+  return await puppeteer.launch({
+    executablePath: CHROME_PATH,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      '--memory-pressure-off',
+      '--max_old_space_size=256'
+    ],
+    headless: true
+  });
 }
 
 // Scraper mit Puppeteer
@@ -137,6 +135,7 @@ async function scrapeNews() {
     }
 
     await page.close();
+    await b.close();
 
     if (allItems.length > 0) {
       newsCache = allItems.slice(0, 500);
@@ -148,7 +147,7 @@ async function scrapeNews() {
 
   } catch (err) {
     console.error('[FEHLER] Scraping fehlgeschlagen:', err.message);
-    browser = null;
+    if (b) try { await b.close(); } catch (_) {}
   }
 }
 
@@ -307,6 +306,7 @@ async function scrapeDelNews() {
     }
 
     await page.close();
+    await b.close();
 
     if (allItems.length > 0) {
       delNewsCache = allItems.slice(0, 500);
@@ -316,7 +316,7 @@ async function scrapeDelNews() {
 
   } catch (err) {
     console.error('[FEHLER] DEL Scraping:', err.message);
-    browser = null;
+    if (b) try { await b.close(); } catch (_) {}
   }
 }
 

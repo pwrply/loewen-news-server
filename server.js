@@ -498,12 +498,12 @@ app.get('/', (req, res) => {
 // Cron: Alle 30 Minuten
 cron.schedule('*/30 * * * *', scrapeNews);
 cron.schedule('*/30 * * * *', scrapeDelNews);
-cron.schedule('*/60 * * * *', scrapeXFeed);
+cron.schedule('0 * * * *', scrapeXFeed);   // jede Stunde
 
-// Beim Start scrapen
+// Beim Start scrapen (versetzt um Memory-Spitzen zu vermeiden)
 scrapeNews();
-scrapeDelNews();
-scrapeXFeed();
+setTimeout(() => scrapeDelNews(), 60000);   // nach 1 Min
+setTimeout(() => scrapeXFeed(), 120000);    // nach 2 Min
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

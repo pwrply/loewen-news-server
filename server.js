@@ -226,14 +226,19 @@ async function scrapeDelNews() {
 
         // Artikel sammeln – nur mit Löwen Frankfurt Bezug
         const loewenKeywords = ['frankfurt', 'löwen', 'loewen'];
+        const excludeKeywords = ['dresden', 'berlin', 'münchen', 'muenchen', 'mannheim', 'bremerhaven',
+          'wolfsburg', 'straubing', 'augsburg', 'nuernberg', 'nürnberg', 'ingolstadt',
+          'iserlohn', 'krefeld', 'schwenningen', 'duesseldorf', 'düsseldorf', 'bietigheim'];
         let gefunden = 0;
         $('a[href]').each((i, el) => {
           const href = $(el).attr('href') || '';
           const text = $(el).text().trim();
           if (href.includes('/news/') && href.length > 10 && text.length > 10) {
             const textLower = text.toLowerCase();
+            const hrefLower = href.toLowerCase();
             const hatBezug = loewenKeywords.some(k => textLower.includes(k));
-            if (!hatBezug) return;
+            const istAusgeschlossen = excludeKeywords.some(k => textLower.includes(k) || hrefLower.includes(k));
+            if (!hatBezug || istAusgeschlossen) return;
             const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
             if (!allItems.find(item => item.url === fullUrl)) {
               const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);

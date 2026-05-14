@@ -224,12 +224,16 @@ async function scrapeDelNews() {
         const html = await page.content();
         const $ = cheerio.load(html);
 
-        // Artikel sammeln
+        // Artikel sammeln – nur mit Löwen Frankfurt Bezug
+        const loewenKeywords = ['frankfurt', 'löwen', 'loewen'];
         let gefunden = 0;
         $('a[href]').each((i, el) => {
           const href = $(el).attr('href') || '';
           const text = $(el).text().trim();
           if (href.includes('/news/') && href.length > 10 && text.length > 10) {
+            const textLower = text.toLowerCase();
+            const hatBezug = loewenKeywords.some(k => textLower.includes(k));
+            if (!hatBezug) return;
             const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
             if (!allItems.find(item => item.url === fullUrl)) {
               const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);

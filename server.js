@@ -226,9 +226,9 @@ async function scrapeDelNews() {
 
         // Artikel sammeln – nur mit Löwen Frankfurt Bezug
         const loewenKeywords = ['frankfurt', 'löwen', 'loewen'];
-        const excludeKeywords = ['dresden', 'berlin', 'münchen', 'muenchen', 'mannheim', 'bremerhaven',
-          'wolfsburg', 'straubing', 'augsburg', 'nuernberg', 'nürnberg', 'ingolstadt',
-          'iserlohn', 'krefeld', 'schwenningen', 'duesseldorf', 'düsseldorf', 'bietigheim'];
+        const excludeKeywords = ['dresden', 'eislöwen', 'eisloewen', 'berlin', 'münchen', 'muenchen',
+          'mannheim', 'bremerhaven', 'wolfsburg', 'straubing', 'augsburg', 'nuernberg', 'nürnberg',
+          'ingolstadt', 'iserlohn', 'krefeld', 'schwenningen', 'duesseldorf', 'düsseldorf', 'bietigheim'];
         let gefunden = 0;
         $('a[href]').each((i, el) => {
           const href = $(el).attr('href') || '';

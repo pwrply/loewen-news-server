@@ -232,28 +232,51 @@ async function scrapeDelNews() {
         const loewenKeywords = ['frankfurt', 'loewen frankfurt'];
         const loewenRegex = /(?<![a-z])löwen(?![a-z])/i;
         let gefunden = 0;
+        // Hilfsfunktion: ISO-Datum (2026-05-14) -> dd.MM.yyyy
+        const isoZuDe = iso => {
+          const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/);
+          return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
+        };
+
         $('a[href]').each((i, el) => {
           const href = $(el).attr('href') || '';
           const text = $(el).text().trim();
           if (href.includes('/news/') && href.length > 10 && text.length > 10) {
             const textLower = text.toLowerCase();
             const hrefLower = href.toLowerCase();
-            // Erst ausschließen
             const istAusgeschlossen = excludeKeywords.some(k => textLower.includes(k) || hrefLower.includes(k));
             if (istAusgeschlossen) return;
-            // Dann Positivfilter: frankfurt, loewen frankfurt, oder 'löwen' als eigenständiges Wort
             const hatBezug = loewenKeywords.some(k => textLower.includes(k)) || loewenRegex.test(text);
             if (!hatBezug) return;
             const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
             if (!allItems.find(item => item.url === fullUrl)) {
               const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
               const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
-              // Datum aus Titel, oder aus URL (z.B. /news/2026/05/14/...), sonst leer lassen
+
+              // 1. Datum im Titel (dd.MM.yyyy)
               let finalDatum = datumImTitel ? datumImTitel[1] : '';
+
+              // 2. Datum im nächsten <time>-Element im selben Container
+              if (!finalDatum) {
+                const container = $(el).closest('article, li, div, section');
+                const timeEl = container.find('time').first();
+                const datetime = timeEl.attr('datetime') || timeEl.text().trim();
+                if (datetime) finalDatum = isoZuDe(datetime) || datetime;
+              }
+
+              // 3. Datum aus URL-Pfad (z.B. /news/2026/05/14/...)
               if (!finalDatum) {
                 const urlDatum = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
                 if (urlDatum) finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
               }
+
+              // 4. Datum aus dem gesamten Container-Text suchen
+              if (!finalDatum) {
+                const containerText = $(el).closest('article, li, div, section').text();
+                const match = containerText.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+                if (match) finalDatum = match[0];
+              }
+
               allItems.push({
                 id: Buffer.from(fullUrl).toString('base64').slice(-32),
                 titel: sauberTitel,

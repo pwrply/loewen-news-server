@@ -3,6 +3,9 @@ const cheerio = require('cheerio');
 const puppeteer = require('puppeteer-core');
 const cron = require('node-cron');
 const cors = require('cors');
+const Parser = require('rss-parser');
+
+const parser = new Parser();
 
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
@@ -350,129 +353,12 @@ async function scrapeDelNews() {
   }
 }
 
-// Presse Scraper - Lokale Sportnachrichten (Bild, FNP, EishockeyNews, FAZ, Offenbacher Post)
-// Hilfsfunktion: relatives Datum ("gestern", "vor X Tagen") -> dd.MM.yyyy
-function relDatumZuDe(text) {
-  const t = (text || '').toLowerCase().trim();
-  const heute = new Date();
-  const fmt = d => `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
-  if (t === 'heute') return fmt(heute);
-  if (t === 'gestern') { heute.setDate(heute.getDate()-1); return fmt(heute); }
-  const vor = t.match(/vor (\d+) tag/);
-  if (vor) { heute.setDate(heute.getDate()-parseInt(vor[1])); return fmt(heute); }
-  // dd.MM.yyyy direkt
-  if (/^\d{2}\.\d{2}\.\d{4}$/.test(t)) return t;
-  // ISO yyyy-mm-dd
-  const iso = t.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[3]}.${iso[2]}.${iso[1]}`;
-  return '';
-}
-
+// Presse Scraper - kommt bald
 async function scrapePresse() {
-  console.log(`[${new Date().toISOString()}] Scraping Presse...`);
-  const allItems = [];
-  let b;
-
-  const sources = [
-    {
-      name: 'EishockeyNews',
-      base: 'https://www.eishockeynews.de',
-      url: 'https://www.eishockeynews.de/verein/loewen-frankfurt/news',
-      // Artikel-Links haben Format /artikel/...
-      hrefFilter: href => href.includes('/artikel/'),
-      // Kein Löwen-Filter nötig, da Vereinsseite
-      loewenFilter: false
-    },
-    {
-      name: 'FAZ',
-      base: 'https://www.faz.net',
-      url: 'https://www.faz.net/aktuell/sport/rhein-main-sport/loewen-frankfurt/',
-      hrefFilter: href => href.includes('/faz.net/') || href.startsWith('/aktuell/'),
-      loewenFilter: false
-    }
-  ];
-
-  try {
-    b = await getBrowser();
-
-    for (const source of sources) {
-      console.log(`  Quelle: ${source.name}`);
-      try {
-        const page = await b.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-        await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
-
-        await page.goto(source.url, { waitUntil: 'networkidle2', timeout: 20000 });
-        await new Promise(r => setTimeout(r, 2000));
-
-        const html = await page.content();
-        const $ = cheerio.load(html);
-
-        $('a[href]').each((i, el) => {
-          const href = $(el).attr('href') || '';
-          const text = $(el).text().trim();
-
-          if (!source.hrefFilter(href)) return;
-          if (text.length < 15) return;
-          if (href.includes('#')) return;
-
-          const fullUrl = href.startsWith('http') ? href : `${source.base}${href}`;
-          if (allItems.find(item => item.url === fullUrl)) return;
-
-          // Datum: 1. <time> im Container, 2. relatives Datum, 3. URL-Datum
-          let finalDatum = '';
-          const container = $(el).closest('article, li, div, section');
-
-          // <time datetime="..."> Attribut
-          const timeEl = container.find('time').first();
-          if (timeEl.length) {
-            finalDatum = relDatumZuDe(timeEl.attr('datetime') || timeEl.text().trim());
-          }
-
-          // Relatives Datum im Container-Text ("gestern", "vor X Tagen")
-          if (!finalDatum) {
-            const containerText = container.text();
-            const relMatch = containerText.match(/\b(heute|gestern|vor \d+ tag)/i);
-            if (relMatch) finalDatum = relDatumZuDe(relMatch[1]);
-          }
-
-          // Datum aus URL
-          if (!finalDatum) {
-            const urlDatum = fullUrl.match(/(\d{4})[\/-](\d{2})[\/-](\d{2})/);
-            if (urlDatum) finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
-          }
-
-          if (!finalDatum) return; // kein Datum -> überspringen (kein Fallback auf 01.01.2020)
-
-          allItems.push({
-            id: Buffer.from(fullUrl).toString('base64').slice(-32),
-            titel: text,
-            url: fullUrl,
-            datum: finalDatum,
-            kategorie: 'Presse',
-            quelle: source.name
-          });
-        });
-
-        await page.close();
-
-      } catch (err) {
-        console.error(`  Fehler ${source.name}:`, err.message);
-      }
-    }
-
-    await b.close();
-
-    if (allItems.length > 0) {
-      presseCache = allItems.slice(0, 300);
-      presseLastUpdated = new Date().toISOString();
-      console.log(`[OK] ${presseCache.length} Presse-Artikel gecacht.`);
-    }
-
-  } catch (err) {
-    console.error('[FEHLER] Presse Scraping:', err.message);
-    if (b) try { await b.close(); } catch (_) {}
-  }
+  // TODO: RSS-Feeds (Kicker, Hessenschau) integrieren
+  presseCache = [];
+  presseLastUpdated = new Date().toISOString();
+  console.log('[INFO] Presse: bald verfügbar.');
 }
 
 // MARK: - API Routen

@@ -94,11 +94,6 @@ async function scrapeNews() {
         if (availablePages.length > 0) {
           const nextPage = availablePages[0];
           nextUrl = paginationMap[nextPage];
-          // Falls Seiten übersprungen werden: alle dazwischen auch besuchen
-          if (nextPage > p + 1) {
-            console.log(`  [WARN] Seite ${p+1} bis ${nextPage-1} fehlen in Pagination`);
-          }
-          console.log(`  Nächste Seite: ${nextPage} -> ${nextUrl}`);
           p = nextPage - 1; // wird am Ende des Loops erhöht
         }
 

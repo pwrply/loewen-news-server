@@ -3,9 +3,6 @@ const cheerio = require('cheerio');
 const puppeteer = require('puppeteer-core');
 const cron = require('node-cron');
 const cors = require('cors');
-const Parser = require('rss-parser');
-
-const parser = new Parser();
 
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 

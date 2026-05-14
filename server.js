@@ -348,6 +348,17 @@ app.get('/api/del-news', (req, res) => {
   res.json({ status: 'ok', lastUpdated: delLastUpdated, count: delNewsCache.length, items: delNewsCache });
 });
 
+// POST /api/reset-cache
+app.post('/api/reset-cache', async (req, res) => {
+  newsCache = [];
+  delNewsCache = [];
+  lastUpdated = null;
+  delLastUpdated = null;
+  res.json({ status: 'ok', message: 'Cache geleert, scraping läuft neu...' });
+  scrapeNews();
+  scrapeDelNews();
+});
+
 // GET /api/health
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', lastUpdated, cachedItems: newsCache.length, uptime: process.uptime() });

@@ -351,36 +351,44 @@ async function scrapeDelNews() {
 }
 
 // Presse Scraper - Lokale Sportnachrichten (Bild, FNP, EishockeyNews, FAZ, Offenbacher Post)
+// Hilfsfunktion: relatives Datum ("gestern", "vor X Tagen") -> dd.MM.yyyy
+function relDatumZuDe(text) {
+  const t = (text || '').toLowerCase().trim();
+  const heute = new Date();
+  const fmt = d => `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
+  if (t === 'heute') return fmt(heute);
+  if (t === 'gestern') { heute.setDate(heute.getDate()-1); return fmt(heute); }
+  const vor = t.match(/vor (\d+) tag/);
+  if (vor) { heute.setDate(heute.getDate()-parseInt(vor[1])); return fmt(heute); }
+  // dd.MM.yyyy direkt
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(t)) return t;
+  // ISO yyyy-mm-dd
+  const iso = t.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[3]}.${iso[2]}.${iso[1]}`;
+  return '';
+}
+
 async function scrapePresse() {
   console.log(`[${new Date().toISOString()}] Scraping Presse...`);
   const allItems = [];
   let b;
 
-  // Presse-URLs mit Löwen Frankfurt News
   const sources = [
     {
-      name: 'Bild',
-      url: 'https://www.bild.de/themen/organisationen/frankfurt-loewen/sport-nachrichten-news-fotos-videos-53500432.bild.html'
-    },
-    {
-      name: 'FNP',
-      url: 'https://www.fnp.de/sport/eishockey/loewen-frankfurt'
-    },
-    {
       name: 'EishockeyNews',
-      url: 'https://www.eishockeynews.de/verein/loewen-frankfurt/news'
+      base: 'https://www.eishockeynews.de',
+      url: 'https://www.eishockeynews.de/verein/loewen-frankfurt/news',
+      // Artikel-Links haben Format /artikel/...
+      hrefFilter: href => href.includes('/artikel/'),
+      // Kein Löwen-Filter nötig, da Vereinsseite
+      loewenFilter: false
     },
     {
       name: 'FAZ',
-      url: 'https://www.faz.net/aktuell/sport/rhein-main-sport/loewen-frankfurt/'
-    },
-    {
-      name: 'Offenbacher Post',
-      url: 'https://www.op-online.de/sport/eishockey/loewen-frankfurt'
-    },
-    {
-      name: 'Hessenschau',
-      url: 'https://www.hessenschau.de/sport/eishockey'
+      base: 'https://www.faz.net',
+      url: 'https://www.faz.net/aktuell/sport/rhein-main-sport/loewen-frankfurt/',
+      hrefFilter: href => href.includes('/faz.net/') || href.startsWith('/aktuell/'),
+      loewenFilter: false
     }
   ];
 
@@ -400,45 +408,50 @@ async function scrapePresse() {
         const html = await page.content();
         const $ = cheerio.load(html);
 
-        // Artikel sammeln
         $('a[href]').each((i, el) => {
           const href = $(el).attr('href') || '';
           const text = $(el).text().trim();
 
-          // Nur Artikel-Links mit Löwen-Bezug
-          if (!href.includes('loewen') && !text.toLowerCase().includes('löwen') && !text.toLowerCase().includes('loewen')) {
-            return;
+          if (!source.hrefFilter(href)) return;
+          if (text.length < 15) return;
+          if (href.includes('#')) return;
+
+          const fullUrl = href.startsWith('http') ? href : `${source.base}${href}`;
+          if (allItems.find(item => item.url === fullUrl)) return;
+
+          // Datum: 1. <time> im Container, 2. relatives Datum, 3. URL-Datum
+          let finalDatum = '';
+          const container = $(el).closest('article, li, div, section');
+
+          // <time datetime="..."> Attribut
+          const timeEl = container.find('time').first();
+          if (timeEl.length) {
+            finalDatum = relDatumZuDe(timeEl.attr('datetime') || timeEl.text().trim());
           }
 
-          if (href.length > 20 && text.length > 15 && !href.includes('#')) {
-            const fullUrl = href.startsWith('http') ? href : `https://${source.url}${href}`;
-
-            // Datum aus Text oder URL extrahieren
-            let finalDatum = '';
-            const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
-            if (datumImTitel) {
-              finalDatum = datumImTitel[1];
-            } else {
-              const urlDatum = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
-              if (urlDatum) {
-                finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
-              }
-            }
-
-            // Nur Artikel ohne bestehende URL
-            if (!allItems.find(item => item.url === fullUrl)) {
-              const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
-              
-              allItems.push({
-                id: Buffer.from(fullUrl).toString('base64').slice(-32),
-                titel: sauberTitel,
-                url: fullUrl,
-                datum: finalDatum || '01.01.2020',
-                kategorie: 'Presse',
-                quelle: source.name
-              });
-            }
+          // Relatives Datum im Container-Text ("gestern", "vor X Tagen")
+          if (!finalDatum) {
+            const containerText = container.text();
+            const relMatch = containerText.match(/\b(heute|gestern|vor \d+ tag)/i);
+            if (relMatch) finalDatum = relDatumZuDe(relMatch[1]);
           }
+
+          // Datum aus URL
+          if (!finalDatum) {
+            const urlDatum = fullUrl.match(/(\d{4})[\/-](\d{2})[\/-](\d{2})/);
+            if (urlDatum) finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
+          }
+
+          if (!finalDatum) return; // kein Datum -> überspringen (kein Fallback auf 01.01.2020)
+
+          allItems.push({
+            id: Buffer.from(fullUrl).toString('base64').slice(-32),
+            titel: text,
+            url: fullUrl,
+            datum: finalDatum,
+            kategorie: 'Presse',
+            quelle: source.name
+          });
         });
 
         await page.close();

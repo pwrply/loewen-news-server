@@ -63,43 +63,43 @@ async function scrapeNews() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
 
-    for (let p = 1; p <= 15; p++) {
-      const url = p === 1 ? NEWS_URL : `${NEWS_URL}?page=${p}`;
-      console.log(`  Seite ${p}: ${url}`);
+    let nextUrl = NEWS_URL;
+    let p = 1;
+
+    while (nextUrl && p <= 30) {
+      console.log(`  Seite ${p}: ${nextUrl}`);
 
       try {
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
-        // Kurz warten bis JS gerendert
+        await page.goto(nextUrl, { waitUntil: 'networkidle2', timeout: 20000 });
         await new Promise(r => setTimeout(r, 1500));
 
         const html = await page.content();
         const $ = cheerio.load(html);
 
-        // Beim ersten Durchlauf: Pagination-Links loggen
-        if (p === 1) {
-          const paginationLinks = [];
-          $('a[href]').each((i, el) => {
-            const href = $(el).attr('href') || '';
-            if (href.includes('page') || href.includes('offset') || href.includes('start') || href.includes('aktuelles')) {
-              paginationLinks.push(href);
-            }
-          });
-          console.log('  Pagination-Links gefunden:', [...new Set(paginationLinks)].slice(0, 20));
-        }
+        // Nächste Seite aus Pagination-Link lesen
+        nextUrl = null;
+        const nextPageNum = p + 1;
+        $('a[href]').each((i, el) => {
+          if (nextUrl) return;
+          const href = $(el).attr('href') || '';
+          const decoded = decodeURIComponent(href);
+          if (decoded.includes('currentPage]=' + nextPageNum) || href.includes('currentPage%5D=' + nextPageNum)) {
+            nextUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+            console.log(`  Seite ${nextPageNum} URL: ${nextUrl}`);
+          }
+        });
 
         let gefunden = 0;
         $('a').each((i, el) => {
           const href = $(el).attr('href') || '';
           const text = $(el).text().trim();
 
-          if (href.includes('/saison/aktuelles/') && href.length > 20 && text.length > 10) {
+          if (href.includes('/saison/aktuelles/details/') && text.length > 10) {
             const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
 
             const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
             const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
             const finalDatum = datumImTitel ? datumImTitel[1] : '';
-
-            if (sauberTitel.match(/^(Vorschau|Spielberichte|Team|Fans|Allgemein)\s*\(/)) return;
 
             if (!allItems.find(item => item.url === fullUrl)) {
               allItems.push({
@@ -115,19 +115,14 @@ async function scrapeNews() {
           }
         });
 
-        console.log(`  -> ${gefunden} neue Artikel auf Seite ${p}`);
-
-        // Wenn keine neuen Artikel – aufhören
-        if (gefunden === 0 && p > 1) {
-          console.log('  Keine weiteren Artikel gefunden, stoppe.');
-          break;
-        }
+        console.log(`  -> ${gefunden} Artikel, nächste Seite: ${nextUrl ? 'ja' : 'nein'}`);
 
       } catch (pageErr) {
         console.error(`  Fehler auf Seite ${p}:`, pageErr.message);
         break;
       }
 
+      p++;
       await new Promise(r => setTimeout(r, 800));
     }
 

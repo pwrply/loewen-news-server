@@ -75,6 +75,18 @@ async function scrapeNews() {
         const html = await page.content();
         const $ = cheerio.load(html);
 
+        // Beim ersten Durchlauf: Pagination-Links loggen
+        if (p === 1) {
+          const paginationLinks = [];
+          $('a[href]').each((i, el) => {
+            const href = $(el).attr('href') || '';
+            if (href.includes('page') || href.includes('offset') || href.includes('start') || href.includes('aktuelles')) {
+              paginationLinks.push(href);
+            }
+          });
+          console.log('  Pagination-Links gefunden:', [...new Set(paginationLinks)].slice(0, 20));
+        }
+
         let gefunden = 0;
         $('a').each((i, el) => {
           const href = $(el).attr('href') || '';

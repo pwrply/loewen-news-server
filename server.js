@@ -225,10 +225,13 @@ async function scrapeDelNews() {
         const $ = cheerio.load(html);
 
         // Artikel sammeln – nur mit Löwen Frankfurt Bezug
-        const loewenKeywords = ['frankfurt', 'löwen', 'loewen'];
+        // Ausschluss zuerst prüfen, dann Positivfilter
         const excludeKeywords = ['dresden', 'eislöwen', 'eisloewen', 'berlin', 'münchen', 'muenchen',
           'mannheim', 'bremerhaven', 'wolfsburg', 'straubing', 'augsburg', 'nuernberg', 'nürnberg',
           'ingolstadt', 'iserlohn', 'krefeld', 'schwenningen', 'duesseldorf', 'düsseldorf', 'bietigheim'];
+        // Positivfilter: 'löwen' nur als eigenständiges Wort (nicht als Teil von 'eislöwen')
+        const loewenKeywords = ['frankfurt', 'loewen frankfurt'];
+        const loewenRegex = /(?<![a-z])löwen(?![a-z])/i;
         let gefunden = 0;
         $('a[href]').each((i, el) => {
           const href = $(el).attr('href') || '';
@@ -236,9 +239,12 @@ async function scrapeDelNews() {
           if (href.includes('/news/') && href.length > 10 && text.length > 10) {
             const textLower = text.toLowerCase();
             const hrefLower = href.toLowerCase();
-            const hatBezug = loewenKeywords.some(k => textLower.includes(k));
+            // Erst ausschließen
             const istAusgeschlossen = excludeKeywords.some(k => textLower.includes(k) || hrefLower.includes(k));
-            if (!hatBezug || istAusgeschlossen) return;
+            if (istAusgeschlossen) return;
+            // Dann Positivfilter: frankfurt, loewen frankfurt, oder 'löwen' als eigenständiges Wort
+            const hatBezug = loewenKeywords.some(k => textLower.includes(k)) || loewenRegex.test(text);
+            if (!hatBezug) return;
             const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
             if (!allItems.find(item => item.url === fullUrl)) {
               const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);

@@ -36,8 +36,8 @@ async function scrapeNews() {
   try {
     const allItems = [];
 
-    // Erste 3 Seiten scrapen
-    for (let page = 1; page <= 3; page++) {
+    // Erste 10 Seiten scrapen
+    for (let page = 1; page <= 10; page++) {
       const url = page === 1 ? NEWS_URL : `${NEWS_URL}?page=${page}`;
       const response = await axios.get(url, {
         headers: {
@@ -120,7 +120,7 @@ async function scrapeNews() {
     }
 
     if (allItems.length > 0) {
-      newsCache = allItems.slice(0, 50);
+      newsCache = allItems.slice(0, 500);
       lastUpdated = new Date().toISOString();
       console.log(`[OK] ${newsCache.length} Artikel gecacht.`);
     } else {

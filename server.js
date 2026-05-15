@@ -163,7 +163,7 @@ let dbBereit           = false;
 const BASE_URL   = 'https://www.loewen-frankfurt.de';
 const NEWS_URL   = `${BASE_URL}/saison/aktuelles`;
 const DEL_URL    = 'https://www.penny-del.org/news';
-const PRESSE_URL = 'https://www.eishockeynews.de/verein/loewen-frankfurt/news';
+const PRESSE_URL = 'https://www.hockeyweb.de/tag/loewen-frankfurt';
 
 function kategorisiere(titel) {
   const t = titel.toLowerCase();
@@ -313,37 +313,69 @@ const loewenRegex    = /(?<![a-z])löwen(?![a-z])/i;
 
 async function scrapeDelSeite(page, url) {
   const items = [];
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-  await new Promise(r => setTimeout(r, 800));
-  const $ = cheerio.load(await page.content());
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  await new Promise(r => setTimeout(r, 2000));
+  const html = await page.content();
+  const $ = cheerio.load(html);
 
+  // Sammle alle Links + dazugehörige Texte (auch aus Eltern-Elementen)
+  const gesehenUrls = new Set();
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    const text = $(el).text().trim();
-    if (!href.includes('/news/') || href.length <= 10 || text.length <= 10) return;
+    if (!href.includes('/news/') || href.length <= 10) return;
+    // Vollständige URL
+    const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+    if (gesehenUrls.has(fullUrl)) return;
+
+    // Text: eigener Text ODER nächster h-Tag im Container
+    const eigenerText = $(el).text().trim();
+    const container   = $(el).closest('article, .news-item, .teaser, .card, li, div');
+    const ueberschrift = container.find('h1,h2,h3,h4').first().text().trim();
+    const text = ueberschrift.length > 10 ? ueberschrift : eigenerText;
+    if (text.length <= 10) return;
+
+    // Datum aus Container
+    let datum = '';
+    const datumEl = container.find('time,[class*="date"],[class*="datum"]').first();
+    const datumRaw = datumEl.attr('datetime') || datumEl.text().trim();
+    const mIso = datumRaw.match(/(\d{4})-(\d{2})-(\d{2})/);
+    const mDe  = datumRaw.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+    if (mIso) datum = `${mIso[3]}.${mIso[2]}.${mIso[1]}`;
+    else if (mDe) datum = datumRaw.match(/(\d{2}\.\d{2}\.\d{4})/)[0];
+
+    // Bild aus Container
+    let bildUrl = '';
+    const img = container.find('img').first();
+    if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
+
     const tL = text.toLowerCase(), hL = href.toLowerCase();
     if (excludeKeywords.some(k => tL.includes(k) || hL.includes(k))) return;
-    if (!loewenKeywords.some(k => tL.includes(k)) && !loewenRegex.test(text)) return;
-    const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+    if (!loewenKeywords.some(k => tL.includes(k) || hL.includes(k)) && !loewenRegex.test(text)) return;
+
+    gesehenUrls.add(fullUrl);
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),
       titel:     text,
       url:       fullUrl,
-      datum:     '',
+      datum,
       kategorie: kategorisiere(text),
       quelle:    'PennyDEL',
       quelletyp: 'del',
-      bildUrl:   ''
+      bildUrl
     });
   });
 
+  // Pagination
   const paginationMap = {};
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    const match = href.match(/\/news\/(\d+)/);
+    // z.B. /news?page=2 oder /news/2
+    const m1 = href.match(/[?&]page=(\d+)/);
+    const m2 = href.match(/\/news\/(\d+)$/);
+    const match = m1 || m2;
     if (match) {
       const num = parseInt(match[1]);
-      paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+      if (num > 1) paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     }
   });
   return { items, paginationMap };
@@ -415,77 +447,100 @@ async function scrapeDelUpdate() {
 // ─────────────────────────────────────────────
 
 async function scrapePresseNews() {
-  console.log(`[${new Date().toISOString()}] Presse News: Scraping eishockeynews.de...`);
+  console.log(`[${new Date().toISOString()}] Presse News: Scraping hockeyweb.de...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
-    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
-    await page.goto(PRESSE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-    await new Promise(r => setTimeout(r, 2000));
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    await page.goto(PRESSE_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 1500));
     const $ = cheerio.load(await page.content());
     await page.close(); await b.close();
     b = null;
 
     const artikel = [];
     const gesehenUrls = new Set();
+    const BASE_HOCKEYWEB = 'https://www.hockeyweb.de';
 
-    $('article').each((i, el) => {
-      // Link
-      const a = $(el).find('a[href]').first();
-      let href = a.attr('href') || '';
-      if (!href) return;
-      const vollUrl = href.startsWith('http')
-        ? href
-        : `https://www.eishockeynews.de/${href.replace(/^\//, '')}`;
-      if (gesehenUrls.has(vollUrl)) return;
-      gesehenUrls.add(vollUrl);
+    // hockeyweb.de: Artikel stehen in h2/h3 mit Links, oder in .entry-title / .post-title
+    const selektoren = [
+      'h2 a[href]', 'h3 a[href]', '.entry-title a', '.post-title a',
+      'article a[href]', '.teaser a[href]', '.news-title a'
+    ];
 
-      // Titel aus h2
-      const titel = $(el).find('h2').first().text().trim();
-      if (!titel || titel.length < 5) return;
+    for (const sel of selektoren) {
+      $(sel).each((i, el) => {
+        const href  = $(el).attr('href') || '';
+        const titel = $(el).text().trim();
+        if (!href || titel.length < 5) return;
+        if (!href.includes('hockeyweb') && !href.startsWith('/')) return;
+        const vollUrl = href.startsWith('http') ? href : `${BASE_HOCKEYWEB}${href}`;
+        if (gesehenUrls.has(vollUrl)) return;
+        gesehenUrls.add(vollUrl);
 
-      // Datum: suche nach dd.MM.yyyy im Text
-      let datumKurz = '';
-      $(el).find('span').each((_, s) => {
-        const t = $(s).text();
-        const m = t.match(/(\d{2}\.\d{2}\.\d{4})/);
-        if (m && !datumKurz) datumKurz = m[1];
-      });
+        // Container für Datum + Bild
+        const container = $(el).closest('article, .post, .teaser, .entry, li');
 
-      // Bild-URL: nimm src oder srcset erstes Element
-      let bildUrl = '';
-      const img = $(el).find('img').first();
-      if (img.length) {
-        bildUrl = img.attr('src') || '';
-        if (!bildUrl) {
-          const srcset = img.attr('srcset') || '';
-          bildUrl = srcset.split(',')[0].trim().split(' ')[0];
+        let datum = '';
+        const datumEl = container.find('time,[class*="date"],[class*="datum"],span').first();
+        const datumRaw = datumEl.attr('datetime') || datumEl.text().trim();
+        const mIso = datumRaw.match(/(\d{4})-(\d{2})-(\d{2})/);
+        const mDe  = datumRaw.match(/(\d{2}\.\d{2}\.\d{4})/);
+        if (mIso) datum = `${mIso[3]}.${mIso[2]}.${mIso[1]}`;
+        else if (mDe) datum = mDe[0];
+
+        let bildUrl = '';
+        const img = container.find('img').first();
+        if (img.length) {
+          bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
         }
-      }
 
-      const id = Buffer.from(vollUrl).toString('base64').slice(-32);
-      artikel.push({
-        id,
-        titel,
-        url:       vollUrl,
-        datum:     datumKurz,
-        kategorie: 'Presse',
-        quelle:    'Eishockey NEWS',
-        quelletyp: 'presse',
-        bildUrl:   bildUrl || ''
+        artikel.push({
+          id:        Buffer.from(vollUrl).toString('base64').slice(-32),
+          titel,
+          url:       vollUrl,
+          datum,
+          kategorie: 'Presse',
+          quelle:    'Hockeyweb',
+          quelletyp: 'presse',
+          bildUrl:   bildUrl || ''
+        });
       });
-    });
+      if (artikel.length > 0) break; // erster passender Selektor reicht
+    }
+
+    // Fallback: alle Links die "/del/" oder "/eishockey/" enthalten
+    if (artikel.length === 0) {
+      $('a[href]').each((i, el) => {
+        const href  = $(el).attr('href') || '';
+        const titel = $(el).text().trim();
+        if (titel.length < 10) return;
+        if (!href.includes('hockeyweb') && !href.startsWith('/')) return;
+        const vollUrl = href.startsWith('http') ? href : `${BASE_HOCKEYWEB}${href}`;
+        if (gesehenUrls.has(vollUrl)) return;
+        gesehenUrls.add(vollUrl);
+        artikel.push({
+          id:        Buffer.from(vollUrl).toString('base64').slice(-32),
+          titel,
+          url:       vollUrl,
+          datum:     '',
+          kategorie: 'Presse',
+          quelle:    'Hockeyweb',
+          quelletyp: 'presse',
+          bildUrl:   ''
+        });
+      });
+    }
 
     if (artikel.length > 0) {
-      // Nur neue Artikel vorne in Cache
       const neuItems = artikel.filter(x => !presseCache.find(c => c.url === x.url));
       presseCache = [...neuItems, ...presseCache].slice(0, 100);
       await speichereNewsInDB(artikel);
       presseLastUpdated = new Date().toISOString();
       console.log(`[OK] Presse: ${artikel.length} Artikel gescraped, ${neuItems.length} neu.`);
     } else {
-      console.warn('[WARN] Presse: Keine Artikel gefunden — Seite möglicherweise anders strukturiert.');
+      console.warn('[WARN] Presse: Keine Artikel gefunden — hockeyweb.de Struktur prüfen.');
     }
   } catch(err) {
     console.error('[FEHLER] Presse Scraper:', err.message);

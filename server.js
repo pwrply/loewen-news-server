@@ -15,12 +15,15 @@ app.use(express.json());
 // MARK: - Datenbank
 // ─────────────────────────────────────────────
 
-const pool = new Pool({
+const DB_AKTIV = !!process.env.DATABASE_URL;
+
+const pool = DB_AKTIV ? new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
-});
+  ssl: { rejectUnauthorized: false }
+}) : null;
 
 async function initDB() {
+  if (!DB_AKTIV) { console.log('[DB] Kein DATABASE_URL — reiner In-Memory-Modus.'); return; }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS news (
       id          TEXT PRIMARY KEY,
@@ -52,6 +55,7 @@ async function initDB() {
 
 // Alle News aus DB in den In-Memory-Cache laden
 async function ladeNewsAusDB() {
+  if (!DB_AKTIV) return;
   const result = await pool.query('SELECT * FROM news ORDER BY erstellt_am DESC LIMIT 500');
   const items = result.rows.map(r => ({
     id:         r.id,
@@ -62,7 +66,6 @@ async function ladeNewsAusDB() {
     quelle:     r.quelle,
     quelletyp:  r.quelletyp
   }));
-  // In die richtigen Caches sortieren
   newsCache    = items.filter(x => x.quelletyp === 'loewen');
   delNewsCache = items.filter(x => x.quelletyp === 'del');
   console.log(`[DB] ${newsCache.length} Löwen + ${delNewsCache.length} DEL Artikel geladen.`);
@@ -70,6 +73,7 @@ async function ladeNewsAusDB() {
 
 // Tabelle aus DB laden
 async function ladeTabelleAusDB() {
+  if (!DB_AKTIV) return;
   const result = await pool.query('SELECT * FROM tabelle ORDER BY rang ASC');
   if (result.rows.length >= 10) {
     tabelleCache = result.rows.map(r => ({
@@ -92,16 +96,17 @@ async function ladeTabelleAusDB() {
 
 // Artikel in DB speichern (neue werden eingefügt, existierende ignoriert)
 async function speichereNewsInDB(items) {
+  if (!DB_AKTIV) return items.length;
   let neu = 0;
   for (const item of items) {
     try {
-      await pool.query(
+      const r = await pool.query(
         `INSERT INTO news (id, titel, url, datum, kategorie, quelle, quelletyp)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (url) DO NOTHING`,
         [item.id, item.titel, item.url, item.datum, item.kategorie, item.quelle, item.quelletyp]
       );
-      neu++;
+      if (r.rowCount > 0) neu++;
     } catch (_) {}
   }
   return neu;
@@ -109,6 +114,7 @@ async function speichereNewsInDB(items) {
 
 // Tabelle in DB speichern (vollständiges Upsert)
 async function speichereTabelleInDB(eintraege) {
+  if (!DB_AKTIV) return;
   for (const e of eintraege) {
     await pool.query(
       `INSERT INTO tabelle (rang, team, spiele, siege, ot_siege, ot_niederlagen, niederlagen, tore_plus, tore_minus, punkte, ist_eigene_mannschaft, aktualisiert_am)
@@ -528,8 +534,10 @@ app.get('/api/del-news', (req, res) => {
 
 app.post('/api/reset-cache', async (req, res) => {
   try {
-    await pool.query('DELETE FROM news');
-    await pool.query('DELETE FROM tabelle');
+    if (DB_AKTIV) {
+      await pool.query('DELETE FROM news');
+      await pool.query('DELETE FROM tabelle');
+    }
     newsCache = []; delNewsCache = [];
     tabelleCache = []; lastUpdated = null;
     delLastUpdated = null; tabelleLastUpdated = null;

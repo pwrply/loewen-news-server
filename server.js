@@ -17,6 +17,8 @@ let delNewsCache = [];
 let delLastUpdated = null;
 let presseCache = [];
 let presseLastUpdated = null;
+let tabelleCache = [];
+let tabelleLastUpdated = null;
 
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
@@ -350,6 +352,78 @@ async function scrapeDelNews() {
   }
 }
 
+// Tabellen-Scraper (DEL Tabelle via penny-del.org)
+async function scrapeTabelle() {
+  console.log(`[${new Date().toISOString()}] Scraping DEL Tabelle...`);
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
+
+    await page.goto('https://www.penny-del.org/tabelle', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    // Warten bis Tabellenzeilen geladen sind
+    await page.waitForSelector('table tbody tr', { timeout: 15000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 1500));
+
+    const html = await page.content();
+    const $ = cheerio.load(html);
+
+    const eintraege = [];
+    $('table tbody tr').each((i, row) => {
+      const cols = $(row).find('td');
+      if (cols.length < 6) return;
+
+      const rang      = parseInt($(cols[0]).text().trim()) || (i + 1);
+      const team      = $(cols[1]).text().trim().replace(/\s+/g, ' ');
+      const spiele    = parseInt($(cols[2]).text().trim()) || 0;
+      const punkte    = parseInt($(cols[3]).text().trim()) || 0;
+      const siege     = parseInt($(cols[4]).text().trim()) || 0;
+      const otSiege   = parseInt($(cols[5]).text().trim()) || 0;
+      const otNied    = parseInt($(cols[6]).text().trim()) || 0;
+      const nieder    = parseInt($(cols[7]).text().trim()) || 0;
+      const tore      = $(cols[8]).text().trim() || '0:0';
+      const toreParts = tore.split(':');
+      const torePlus  = parseInt(toreParts[0]) || 0;
+      const toreMinus = parseInt(toreParts[1]) || 0;
+
+      if (!team || team.length < 2) return;
+
+      eintraege.push({
+        rang,
+        team,
+        spiele,
+        siege,
+        otSiege,
+        otNiederlagen: otNied,
+        niederlagen: nieder,
+        torePlus,
+        toreMinus,
+        punkte,
+        istEigenesMannschaft: team.toLowerCase().includes('frankfurt')
+      });
+    });
+
+    if (eintraege.length >= 10) {
+      tabelleCache = eintraege;
+      tabelleLastUpdated = new Date().toISOString();
+      console.log(`[OK] DEL Tabelle: ${eintraege.length} Teams gecacht.`);
+    } else {
+      console.warn(`[WARN] Tabelle: nur ${eintraege.length} Einträge gefunden — Cache nicht aktualisiert.`);
+    }
+
+  } catch (err) {
+    console.error('[FEHLER] Tabelle Scraping:', err.message);
+  } finally {
+    if (b) try { await b.close(); } catch (_) {}
+  }
+}
+
 // Presse Scraper - kommt bald
 async function scrapePresse() {
   // TODO: RSS-Feeds (Kicker, Hessenschau) integrieren
@@ -393,6 +467,16 @@ app.get('/api/article', async (req, res) => {
   }
 });
 
+// GET /api/tabelle
+app.get('/api/tabelle', (req, res) => {
+  res.json({
+    status: 'ok',
+    lastUpdated: tabelleLastUpdated,
+    count: tabelleCache.length,
+    tabelle: tabelleCache
+  });
+});
+
 // GET /api/del-news
 app.get('/api/del-news', (req, res) => {
   res.json({ status: 'ok', lastUpdated: delLastUpdated, count: delNewsCache.length, items: delNewsCache });
@@ -430,11 +514,13 @@ app.get('/', (req, res) => {
 cron.schedule('*/30 * * * *', scrapeNews);
 cron.schedule('*/30 * * * *', scrapeDelNews);
 cron.schedule('*/30 * * * *', scrapePresse);
+cron.schedule('*/30 * * * *', scrapeTabelle);
 
 // Beim Start scrapen (versetzt um Memory-Spitzen zu vermeiden)
 scrapeNews();
-setTimeout(() => scrapeDelNews(), 60000);   // nach 1 Min
+setTimeout(() => scrapeDelNews(), 60000);    // nach 1 Min
 setTimeout(() => scrapePresse(), 120000);    // nach 2 Min
+setTimeout(() => scrapeTabelle(), 180000);   // nach 3 Min
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

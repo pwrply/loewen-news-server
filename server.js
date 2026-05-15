@@ -20,6 +20,10 @@ let presseLastUpdated = null;
 let tabelleCache = [];
 let tabelleLastUpdated = null;
 
+// Flags: wurde der initiale Vollscan schon gemacht?
+let newsVollständigGeladen = false;
+let delVollständigGeladen = false;
+
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
 
@@ -39,7 +43,7 @@ function kategorisiere(titel) {
   return 'Allgemein';
 }
 
-// Browser-Instanz: immer frisch starten, nach Scraping sofort schließen
+// Browser-Instanz
 async function getBrowser() {
   return await puppeteer.launch({
     executablePath: CHROME_PATH,
@@ -56,12 +60,58 @@ async function getBrowser() {
   });
 }
 
-// Scraper mit Puppeteer
-async function scrapeNews() {
-  console.log(`[${new Date().toISOString()}] Scraping news mit Puppeteer...`);
+// ─────────────────────────────────────────────
+// MARK: - Löwen News Scraper
+// ─────────────────────────────────────────────
+
+// Hilfsfunktion: eine einzelne Seite scrapen und Artikel zurückgeben
+async function scrapeNewsSeite(page, url) {
+  const items = [];
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await new Promise(r => setTimeout(r, 800));
+  const html = await page.content();
+  const $ = cheerio.load(html);
+
+  $('a').each((i, el) => {
+    const href = $(el).attr('href') || '';
+    const text = $(el).text().trim();
+    if (href.includes('/saison/aktuelles/details/') && text.length > 10) {
+      const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+      const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
+      const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
+      const finalDatum = datumImTitel ? datumImTitel[1] : '';
+      items.push({
+        id: Buffer.from(fullUrl).toString('base64').slice(-32),
+        titel: sauberTitel,
+        url: fullUrl,
+        datum: finalDatum,
+        kategorie: kategorisiere(sauberTitel),
+        quelle: 'Löwen Frankfurt',
+        quelletyp: 'loewen'
+      });
+    }
+  });
+
+  // Nächste Seite ermitteln
+  const paginationMap = {};
+  $('a[href]').each((i, el) => {
+    const href = $(el).attr('href') || '';
+    const decoded = decodeURIComponent(href);
+    const match = decoded.match(/currentPage\]=(\d+)/);
+    if (match) {
+      const num = parseInt(match[1]);
+      paginationMap[num] = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+    }
+  });
+
+  return { items, paginationMap };
+}
+
+// Vollständiger Scan: alle Seiten (nur beim ersten Start)
+async function scrapeNewsVollständig() {
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan startet...`);
   const allItems = [];
   let b;
-
   try {
     b = await getBrowser();
     const page = await b.newPage();
@@ -73,68 +123,23 @@ async function scrapeNews() {
 
     while (nextUrl && p <= 30) {
       console.log(`  Seite ${p}: ${nextUrl}`);
-
       try {
-        await page.goto(nextUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await new Promise(r => setTimeout(r, 800));
-
-        const html = await page.content();
-        const $ = cheerio.load(html);
-
-        // Alle Pagination-Links sammeln und kleinste unbesuchte Seite nehmen
-        const paginationMap = {};
-        $('a[href]').each((i, el) => {
-          const href = $(el).attr('href') || '';
-          const decoded = decodeURIComponent(href);
-          const match = decoded.match(/currentPage\]=(\d+)/);
-          if (match) {
-            const num = parseInt(match[1]);
-            paginationMap[num] = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-          }
-        });
-
-        // Nächste Seite = kleinste Seitennummer größer als p
-        nextUrl = null;
-        const availablePages = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a,b) => a-b);
-        if (availablePages.length > 0) {
-          const nextPage = availablePages[0];
-          nextUrl = paginationMap[nextPage];
-          p = nextPage - 1; // wird am Ende des Loops erhöht
+        const { items, paginationMap } = await scrapeNewsSeite(page, nextUrl);
+        for (const item of items) {
+          if (!allItems.find(x => x.url === item.url)) allItems.push(item);
         }
+        console.log(`  -> ${items.length} Artikel`);
 
-        let gefunden = 0;
-        $('a').each((i, el) => {
-          const href = $(el).attr('href') || '';
-          const text = $(el).text().trim();
-
-          if (href.includes('/saison/aktuelles/details/') && text.length > 10) {
-            const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-
-            const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
-            const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
-            const finalDatum = datumImTitel ? datumImTitel[1] : '';
-
-            if (!allItems.find(item => item.url === fullUrl)) {
-              allItems.push({
-                id: Buffer.from(fullUrl).toString('base64').slice(-32),
-                titel: sauberTitel,
-                url: fullUrl,
-                datum: finalDatum,
-                kategorie: kategorisiere(sauberTitel),
-                quelle: 'Löwen Frankfurt'
-              });
-              gefunden++;
-            }
-          }
-        });
-
-        console.log(`  -> ${gefunden} Artikel, nächste Seite: ${nextUrl ? 'ja' : 'nein'}`);
-
-      } catch (pageErr) {
-        console.error(`  Fehler auf Seite ${p}:`, pageErr.message);
+        nextUrl = null;
+        const available = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a, b) => a - b);
+        if (available.length > 0) {
+          nextUrl = paginationMap[available[0]];
+          p = available[0] - 1;
+        }
+      } catch (e) {
+        console.error(`  Fehler Seite ${p}:`, e.message);
         break;
       }
-
       p++;
       await new Promise(r => setTimeout(r, 800));
     }
@@ -145,194 +150,151 @@ async function scrapeNews() {
     if (allItems.length > 0) {
       newsCache = allItems.slice(0, 500);
       lastUpdated = new Date().toISOString();
-      console.log(`[OK] ${newsCache.length} Artikel gecacht.`);
-    } else {
-      console.log('[WARN] Keine Artikel gefunden.');
+      newsVollständigGeladen = true;
+      console.log(`[OK] Löwen News Vollscan: ${newsCache.length} Artikel gecacht.`);
     }
-
   } catch (err) {
-    console.error('[FEHLER] Scraping fehlgeschlagen:', err.message);
+    console.error('[FEHLER] Löwen News Vollscan:', err.message);
     if (b) try { await b.close(); } catch (_) {}
   }
 }
 
-// Artikel-Inhalt scrapen
-async function scrapeArticle(url) {
-  let b;
-  try {
-    b = await getBrowser();
-    const page = await b.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 1000));
-
-    const html = await page.content();
-    await page.close();
-    await b.close();
-
-    const $ = cheerio.load(html);
-    $('header, footer, nav, .cookie, [class*="cookie"], [class*="consent"], script, style, iframe').remove();
-
-    const titel = $('h1').first().text().trim();
-    const datum = $('time').first().attr('datetime') || $('time').first().text().trim() || $('[class*="date"], [class*="datum"]').first().text().trim() || '';
-
-    // Base URL aus der Artikel-URL ableiten (Löwen vs. DEL)
-    const articleBase = url.startsWith('https://www.penny-del.org') ? 'https://www.penny-del.org' : BASE_URL;
-
-    let bild = '';
-    $('article img, .article img, .content img, main img, img').each((i, el) => {
-      if (bild) return;
-      const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-lazy-src') || '';
-      if (src && !src.includes('logo') && !src.includes('icon') && !src.includes('avatar') && !src.includes('svg')) {
-        if (src.startsWith('http')) {
-          bild = src;
-        } else if (src.startsWith('//')) {
-          bild = 'https:' + src;
-        } else {
-          bild = `${articleBase}${src.startsWith('/') ? '' : '/'}${src}`;
-        }
-      }
-    });
-
-    const absaetze = [];
-    $('article p, .article p, .content p, main p').each((i, el) => {
-      const text = $(el).text().trim();
-      if (text.length > 30) absaetze.push(text);
-    });
-    if (absaetze.length === 0) {
-      $('p').each((i, el) => {
-        const text = $(el).text().trim();
-        if (text.length > 30) absaetze.push(text);
-      });
-    }
-
-    return { titel, datum, bild, absaetze, url };
-
-  } catch (err) {
-    if (b) try { await b.close(); } catch (_) {}
-    throw new Error(err.message);
+// Schnell-Update: nur Seite 1, neue Artikel vorne einfügen
+async function scrapeNewsUpdate() {
+  if (!newsVollständigGeladen) {
+    console.log('[INFO] Löwen News: Vollscan noch nicht fertig, überspringe Update.');
+    return;
   }
-}
-
-// DEL News Scraper
-async function scrapeDelNews() {
-  console.log(`[${new Date().toISOString()}] Scraping DEL news...`);
-  const allItems = [];
+  console.log(`[${new Date().toISOString()}] Löwen News: Seite-1-Update...`);
   let b;
-
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
 
-    let nextUrl = 'https://www.penny-del.org/news';
+    const { items } = await scrapeNewsSeite(page, NEWS_URL);
+    await page.close();
+    await b.close();
+
+    let neu = 0;
+    for (const item of items) {
+      if (!newsCache.find(x => x.url === item.url)) {
+        newsCache.unshift(item);
+        neu++;
+      }
+    }
+    lastUpdated = new Date().toISOString();
+    console.log(`[OK] Löwen News Update: ${neu} neue Artikel.`);
+  } catch (err) {
+    console.error('[FEHLER] Löwen News Update:', err.message);
+    if (b) try { await b.close(); } catch (_) {}
+  }
+}
+
+// ─────────────────────────────────────────────
+// MARK: - DEL News Scraper
+// ─────────────────────────────────────────────
+
+const DEL_NEWS_URL = 'https://www.penny-del.org/news';
+const excludeKeywords = ['dresden', 'eislöwen', 'eisloewen', 'berlin', 'münchen', 'muenchen',
+  'mannheim', 'bremerhaven', 'wolfsburg', 'straubing', 'augsburg', 'nuernberg', 'nürnberg',
+  'ingolstadt', 'iserlohn', 'krefeld', 'schwenningen', 'duesseldorf', 'düsseldorf', 'bietigheim'];
+const loewenKeywords = ['frankfurt', 'loewen frankfurt'];
+const loewenRegex = /(?<![a-z])löwen(?![a-z])/i;
+
+const isoZuDe = iso => {
+  const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
+};
+
+async function scrapeDelSeite(page, url) {
+  const items = [];
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await new Promise(r => setTimeout(r, 800));
+  const html = await page.content();
+  const $ = cheerio.load(html);
+
+  $('a[href]').each((i, el) => {
+    const href = $(el).attr('href') || '';
+    const text = $(el).text().trim();
+    if (href.includes('/news/') && href.length > 10 && text.length > 10) {
+      const textLower = text.toLowerCase();
+      const hrefLower = href.toLowerCase();
+      if (excludeKeywords.some(k => textLower.includes(k) || hrefLower.includes(k))) return;
+      if (!loewenKeywords.some(k => textLower.includes(k)) && !loewenRegex.test(text)) return;
+      const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+      const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
+      const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
+      let finalDatum = datumImTitel ? datumImTitel[1] : '';
+      if (!finalDatum) {
+        const container = $(el).closest('article, li, div, section');
+        const timeEl = container.find('time').first();
+        const datetime = timeEl.attr('datetime') || timeEl.text().trim();
+        if (datetime) finalDatum = isoZuDe(datetime) || datetime;
+      }
+      if (!finalDatum) {
+        const urlDatum = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
+        if (urlDatum) finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
+      }
+      items.push({
+        id: Buffer.from(fullUrl).toString('base64').slice(-32),
+        titel: sauberTitel,
+        url: fullUrl,
+        datum: finalDatum,
+        kategorie: 'DEL',
+        quelle: 'PENNY DEL',
+        quelletyp: 'del'
+      });
+    }
+  });
+
+  const paginationMap = {};
+  $('a[href]').each((i, el) => {
+    const href = $(el).attr('href') || '';
+    const decoded = decodeURIComponent(href);
+    const match = decoded.match(/currentPage\]=(\d+)/) || href.match(/page=(\d+)/) || href.match(/\/news\/(\d+)/) || href.match(/seite\/(\d+)/);
+    if (match) {
+      const num = parseInt(match[1]);
+      paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
+    }
+  });
+
+  return { items, paginationMap };
+}
+
+async function scrapeDelVollständig() {
+  console.log(`[${new Date().toISOString()}] DEL News: Vollscan startet...`);
+  const allItems = [];
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
+
+    let nextUrl = DEL_NEWS_URL;
     let p = 1;
 
     while (nextUrl && p <= 30) {
       console.log(`  DEL Seite ${p}: ${nextUrl}`);
-
       try {
-        await page.goto(nextUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await new Promise(r => setTimeout(r, 800));
-
-        const html = await page.content();
-        const $ = cheerio.load(html);
-
-        // Artikel sammeln – nur mit Löwen Frankfurt Bezug
-        // Ausschluss zuerst prüfen, dann Positivfilter
-        const excludeKeywords = ['dresden', 'eislöwen', 'eisloewen', 'berlin', 'münchen', 'muenchen',
-          'mannheim', 'bremerhaven', 'wolfsburg', 'straubing', 'augsburg', 'nuernberg', 'nürnberg',
-          'ingolstadt', 'iserlohn', 'krefeld', 'schwenningen', 'duesseldorf', 'düsseldorf', 'bietigheim'];
-        // Positivfilter: 'löwen' nur als eigenständiges Wort (nicht als Teil von 'eislöwen')
-        const loewenKeywords = ['frankfurt', 'loewen frankfurt'];
-        const loewenRegex = /(?<![a-z])löwen(?![a-z])/i;
-        let gefunden = 0;
-        // Hilfsfunktion: ISO-Datum (2026-05-14) -> dd.MM.yyyy
-        const isoZuDe = iso => {
-          const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/);
-          return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
-        };
-
-        $('a[href]').each((i, el) => {
-          const href = $(el).attr('href') || '';
-          const text = $(el).text().trim();
-          if (href.includes('/news/') && href.length > 10 && text.length > 10) {
-            const textLower = text.toLowerCase();
-            const hrefLower = href.toLowerCase();
-            const istAusgeschlossen = excludeKeywords.some(k => textLower.includes(k) || hrefLower.includes(k));
-            if (istAusgeschlossen) return;
-            const hatBezug = loewenKeywords.some(k => textLower.includes(k)) || loewenRegex.test(text);
-            if (!hatBezug) return;
-            const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
-            if (!allItems.find(item => item.url === fullUrl)) {
-              const datumImTitel = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
-              const sauberTitel = datumImTitel ? text.replace(datumImTitel[0], '').trim() : text;
-
-              // 1. Datum im Titel (dd.MM.yyyy)
-              let finalDatum = datumImTitel ? datumImTitel[1] : '';
-
-              // 2. Datum im nächsten <time>-Element im selben Container
-              if (!finalDatum) {
-                const container = $(el).closest('article, li, div, section');
-                const timeEl = container.find('time').first();
-                const datetime = timeEl.attr('datetime') || timeEl.text().trim();
-                if (datetime) finalDatum = isoZuDe(datetime) || datetime;
-              }
-
-              // 3. Datum aus URL-Pfad (z.B. /news/2026/05/14/...)
-              if (!finalDatum) {
-                const urlDatum = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
-                if (urlDatum) finalDatum = `${urlDatum[3]}.${urlDatum[2]}.${urlDatum[1]}`;
-              }
-
-              // 4. Datum aus dem gesamten Container-Text suchen
-              if (!finalDatum) {
-                const containerText = $(el).closest('article, li, div, section').text();
-                const match = containerText.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-                if (match) finalDatum = match[0];
-              }
-
-              allItems.push({
-                id: Buffer.from(fullUrl).toString('base64').slice(-32),
-                titel: sauberTitel,
-                url: fullUrl,
-                datum: finalDatum,
-                kategorie: 'DEL',
-                quelle: 'PENNY DEL'
-              });
-              gefunden++;
-            }
-          }
-        });
-
-        // Pagination
-        const paginationMap = {};
-        $('a[href]').each((i, el) => {
-          const href = $(el).attr('href') || '';
-          const decoded = decodeURIComponent(href);
-          const match = decoded.match(/currentPage\]=(\d+)/) || href.match(/page=(\d+)/) || href.match(/\/news\/(\d+)/) || href.match(/seite\/(\d+)/);
-          if (match) {
-            const num = parseInt(match[1]);
-            if (num > p) paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
-          }
-        });
+        const { items, paginationMap } = await scrapeDelSeite(page, nextUrl);
+        for (const item of items) {
+          if (!allItems.find(x => x.url === item.url)) allItems.push(item);
+        }
+        console.log(`  -> ${items.length} DEL Artikel`);
 
         nextUrl = null;
         const available = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a, b) => a - b);
         if (available.length > 0) {
-          const nextPage = available[0];
-          nextUrl = paginationMap[nextPage];
-          p = nextPage - 1;
+          nextUrl = paginationMap[available[0]];
+          p = available[0] - 1;
         }
-
-        console.log(`  -> ${gefunden} DEL Artikel, nächste Seite: ${nextUrl ? 'ja' : 'nein'}`);
-
-      } catch (err) {
-        console.error(`  Fehler DEL Seite ${p}:`, err.message);
+      } catch (e) {
+        console.error(`  Fehler DEL Seite ${p}:`, e.message);
         break;
       }
-
       p++;
       await new Promise(r => setTimeout(r, 800));
     }
@@ -343,16 +305,51 @@ async function scrapeDelNews() {
     if (allItems.length > 0) {
       delNewsCache = allItems.slice(0, 500);
       delLastUpdated = new Date().toISOString();
-      console.log(`[OK] ${delNewsCache.length} DEL Artikel gecacht.`);
+      delVollständigGeladen = true;
+      console.log(`[OK] DEL News Vollscan: ${delNewsCache.length} Artikel gecacht.`);
     }
-
   } catch (err) {
-    console.error('[FEHLER] DEL Scraping:', err.message);
+    console.error('[FEHLER] DEL News Vollscan:', err.message);
     if (b) try { await b.close(); } catch (_) {}
   }
 }
 
-// Tabellen-Scraper (DEL Tabelle via penny-del.org)
+async function scrapeDelUpdate() {
+  if (!delVollständigGeladen) {
+    console.log('[INFO] DEL News: Vollscan noch nicht fertig, überspringe Update.');
+    return;
+  }
+  console.log(`[${new Date().toISOString()}] DEL News: Seite-1-Update...`);
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'de-DE,de;q=0.9' });
+
+    const { items } = await scrapeDelSeite(page, DEL_NEWS_URL);
+    await page.close();
+    await b.close();
+
+    let neu = 0;
+    for (const item of items) {
+      if (!delNewsCache.find(x => x.url === item.url)) {
+        delNewsCache.unshift(item);
+        neu++;
+      }
+    }
+    delLastUpdated = new Date().toISOString();
+    console.log(`[OK] DEL News Update: ${neu} neue Artikel.`);
+  } catch (err) {
+    console.error('[FEHLER] DEL News Update:', err.message);
+    if (b) try { await b.close(); } catch (_) {}
+  }
+}
+
+// ─────────────────────────────────────────────
+// MARK: - Tabellen-Scraper
+// ─────────────────────────────────────────────
+
 async function scrapeTabelle() {
   console.log(`[${new Date().toISOString()}] Scraping DEL Tabelle...`);
   let b;
@@ -366,8 +363,6 @@ async function scrapeTabelle() {
       waitUntil: 'networkidle2',
       timeout: 30000
     });
-
-    // Warten bis Tabellenzeilen geladen sind
     await page.waitForSelector('table tbody tr', { timeout: 15000 }).catch(() => {});
     await new Promise(r => setTimeout(r, 1500));
 
@@ -378,7 +373,6 @@ async function scrapeTabelle() {
     $('table tbody tr').each((i, row) => {
       const cols = $(row).find('td');
       if (cols.length < 6) return;
-
       const rang      = parseInt($(cols[0]).text().trim()) || (i + 1);
       const team      = $(cols[1]).text().trim().replace(/\s+/g, ' ');
       const spiele    = parseInt($(cols[2]).text().trim()) || 0;
@@ -391,20 +385,11 @@ async function scrapeTabelle() {
       const toreParts = tore.split(':');
       const torePlus  = parseInt(toreParts[0]) || 0;
       const toreMinus = parseInt(toreParts[1]) || 0;
-
       if (!team || team.length < 2) return;
-
       eintraege.push({
-        rang,
-        team,
-        spiele,
-        siege,
-        otSiege,
-        otNiederlagen: otNied,
-        niederlagen: nieder,
-        torePlus,
-        toreMinus,
-        punkte,
+        rang, team, spiele, siege, otSiege,
+        otNiederlagen: otNied, niederlagen: nieder,
+        torePlus, toreMinus, punkte,
         istEigenesMannschaft: team.toLowerCase().includes('frankfurt')
       });
     });
@@ -414,9 +399,8 @@ async function scrapeTabelle() {
       tabelleLastUpdated = new Date().toISOString();
       console.log(`[OK] DEL Tabelle: ${eintraege.length} Teams gecacht.`);
     } else {
-      console.warn(`[WARN] Tabelle: nur ${eintraege.length} Einträge gefunden — Cache nicht aktualisiert.`);
+      console.warn(`[WARN] Tabelle: nur ${eintraege.length} Einträge — Cache nicht aktualisiert.`);
     }
-
   } catch (err) {
     console.error('[FEHLER] Tabelle Scraping:', err.message);
   } finally {
@@ -424,29 +408,77 @@ async function scrapeTabelle() {
   }
 }
 
-// Presse Scraper - kommt bald
+// ─────────────────────────────────────────────
+// MARK: - Artikel-Inhalt Scraper
+// ─────────────────────────────────────────────
+
+async function scrapeArticle(url) {
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 1000));
+    const html = await page.content();
+    await page.close();
+    await b.close();
+    const $ = cheerio.load(html);
+    $('header, footer, nav, .cookie, [class*="cookie"], [class*="consent"], script, style, iframe').remove();
+    const titel = $('h1').first().text().trim();
+    const datum = $('time').first().attr('datetime') || $('time').first().text().trim() || $('[class*="date"], [class*="datum"]').first().text().trim() || '';
+    const articleBase = url.startsWith('https://www.penny-del.org') ? 'https://www.penny-del.org' : BASE_URL;
+    let bild = '';
+    $('article img, .article img, .content img, main img, img').each((i, el) => {
+      if (bild) return;
+      const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-lazy-src') || '';
+      if (src && !src.includes('logo') && !src.includes('icon') && !src.includes('avatar') && !src.includes('svg')) {
+        bild = src.startsWith('http') ? src : src.startsWith('//') ? 'https:' + src : `${articleBase}${src.startsWith('/') ? '' : '/'}${src}`;
+      }
+    });
+    const absaetze = [];
+    $('article p, .article p, .content p, main p').each((i, el) => {
+      const text = $(el).text().trim();
+      if (text.length > 30) absaetze.push(text);
+    });
+    if (absaetze.length === 0) {
+      $('p').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.length > 30) absaetze.push(text);
+      });
+    }
+    return { titel, datum, bild, absaetze, url };
+  } catch (err) {
+    if (b) try { await b.close(); } catch (_) {}
+    throw new Error(err.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// MARK: - Presse (Platzhalter)
+// ─────────────────────────────────────────────
+
 async function scrapePresse() {
-  // TODO: RSS-Feeds (Kicker, Hessenschau) integrieren
   presseCache = [];
   presseLastUpdated = new Date().toISOString();
   console.log('[INFO] Presse: bald verfügbar.');
 }
 
+// ─────────────────────────────────────────────
 // MARK: - API Routen
+// ─────────────────────────────────────────────
+
+const parseDate = d => {
+  if (!d) return 0;
+  const [day, month, year] = d.split('.');
+  return new Date(`${year}-${month}-${day}`).getTime() || 0;
+};
 
 // GET /api/news
 app.get('/api/news', (req, res) => {
   const kategorie = req.query.kategorie;
-  // Löwen + DEL zusammenführen, nach Datum sortieren
-  const combined = [...newsCache, ...delNewsCache, ...presseCache].sort((a, b) => {
-    // Datum Format: DD.MM.YYYY
-    const parseDate = d => {
-      if (!d) return 0;
-      const [day, month, year] = d.split('.');
-      return new Date(`${year}-${month}-${day}`).getTime() || 0;
-    };
-    return parseDate(b.datum) - parseDate(a.datum);
-  });
+  const combined = [...newsCache, ...delNewsCache, ...presseCache]
+    .sort((a, b) => parseDate(b.datum) - parseDate(a.datum));
   let items = combined;
   if (kategorie && kategorie !== 'Alle') {
     items = items.filter(n => n.kategorie === kategorie);
@@ -469,12 +501,7 @@ app.get('/api/article', async (req, res) => {
 
 // GET /api/tabelle
 app.get('/api/tabelle', (req, res) => {
-  res.json({
-    status: 'ok',
-    lastUpdated: tabelleLastUpdated,
-    count: tabelleCache.length,
-    tabelle: tabelleCache
-  });
+  res.json({ status: 'ok', lastUpdated: tabelleLastUpdated, count: tabelleCache.length, tabelle: tabelleCache });
 });
 
 // GET /api/del-news
@@ -490,39 +517,68 @@ app.post('/api/reset-cache', async (req, res) => {
   lastUpdated = null;
   delLastUpdated = null;
   presseLastUpdated = null;
-  res.json({ status: 'ok', message: 'Cache geleert, scraping läuft neu...' });
-  scrapeNews();
-  scrapeDelNews();
-  scrapePresse();
+  newsVollständigGeladen = false;
+  delVollständigGeladen = false;
+  res.json({ status: 'ok', message: 'Cache geleert, Vollscan läuft neu...' });
+  scrapeNewsVollständig();
+  setTimeout(() => scrapeDelVollständig(), 60000);
+  setTimeout(() => scrapePresse(), 120000);
+  setTimeout(() => scrapeTabelle(), 180000);
 });
 
 // GET /api/health
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', lastUpdated, cachedItems: newsCache.length, uptime: process.uptime() });
+  res.json({
+    status: 'ok',
+    lastUpdated,
+    cachedItems: newsCache.length,
+    delItems: delNewsCache.length,
+    tabelleItems: tabelleCache.length,
+    newsVollständigGeladen,
+    delVollständigGeladen,
+    uptime: process.uptime()
+  });
 });
 
 // GET /
 app.get('/', (req, res) => {
   res.json({
     name: 'Löwen Frankfurt News Server',
-    version: '2.0.0',
-    endpoints: ['GET /api/news', 'GET /api/article?url=...', 'GET /api/health']
+    version: '3.0.0',
+    endpoints: [
+      'GET /api/news',
+      'GET /api/article?url=...',
+      'GET /api/tabelle',
+      'GET /api/del-news',
+      'GET /api/health',
+      'POST /api/reset-cache'
+    ]
   });
 });
 
-// Cron: Alle 30 Minuten
-cron.schedule('*/30 * * * *', scrapeNews);
-cron.schedule('*/30 * * * *', scrapeDelNews);
-cron.schedule('*/30 * * * *', scrapePresse);
-cron.schedule('*/30 * * * *', scrapeTabelle);
+// ─────────────────────────────────────────────
+// MARK: - Cron Jobs
+// ─────────────────────────────────────────────
 
-// Beim Start scrapen (versetzt um Memory-Spitzen zu vermeiden)
-scrapeNews();
-setTimeout(() => scrapeDelNews(), 60000);    // nach 1 Min
-setTimeout(() => scrapePresse(), 120000);    // nach 2 Min
-setTimeout(() => scrapeTabelle(), 180000);   // nach 3 Min
+// Alle 5 Minuten: nur Seite 1 aktualisieren
+cron.schedule('*/5 * * * *', scrapeNewsUpdate);
+cron.schedule('*/5 * * * *', scrapeDelUpdate);
+
+// Alle 15 Minuten: Tabelle aktualisieren
+cron.schedule('*/15 * * * *', scrapeTabelle);
+
+// ─────────────────────────────────────────────
+// MARK: - Startup (versetzt, um Memory-Spitzen zu vermeiden)
+// ─────────────────────────────────────────────
+
+// Vollscan beim ersten Start
+scrapeNewsVollständig();
+setTimeout(() => scrapeDelVollständig(), 90000);  // nach 1,5 Min
+setTimeout(() => scrapePresse(), 180000);          // nach 3 Min
+setTimeout(() => scrapeTabelle(), 240000);         // nach 4 Min
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server läuft auf Port ${PORT}`);
+  console.log(`Server v3.0 läuft auf Port ${PORT}`);
+  console.log('Strategie: Vollscan beim Start, dann Seite-1-Updates alle 5 Min.');
 });

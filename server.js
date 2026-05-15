@@ -310,39 +310,46 @@ async function scrapeNewsUpdate() {
 // MARK: - DEL News Scraper
 // ─────────────────────────────────────────────
 
+// Filterregel: Artikel muss Frankfurt/Löwen enthalten, aber NICHT Eislöwen Dresden
+function istLoewen(text, href) {
+  const t = (text + ' ' + href).toLowerCase();
+  if (t.includes('eislöwen') || t.includes('eisloewen') || t.includes('dresden')) return false;
+  return t.includes('frankfurt') || t.includes('loewen frankfurt') || /(?<![a-z])löwen(?![a-z])/i.test(text);
+}
+
 async function scrapeDelSeite(page, url) {
   const items = [];
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
   await new Promise(r => setTimeout(r, 2000));
-  const html = await page.content();
-  const $ = cheerio.load(html);
+  const $ = cheerio.load(await page.content());
 
-  // Sammle alle Links + dazugehörige Texte (auch aus Eltern-Elementen)
   const gesehenUrls = new Set();
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
     if (!href.includes('/news/') || href.length <= 10) return;
-    // Vollständige URL
     const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     if (gesehenUrls.has(fullUrl)) return;
 
-    // Text: eigener Text ODER nächster h-Tag im Container
-    const eigenerText = $(el).text().trim();
-    const container   = $(el).closest('article, .news-item, .teaser, .card, li, div');
+    // Text: eigener Text ODER Überschrift im Container
+    const eigenerText  = $(el).text().trim();
+    const container    = $(el).closest('article, .news-item, .teaser, .card, li, div');
     const ueberschrift = container.find('h1,h2,h3,h4').first().text().trim();
     const text = ueberschrift.length > 10 ? ueberschrift : eigenerText;
     if (text.length <= 10) return;
 
-    // Datum aus Container
+    // Frankfurt/Löwen-Filter (Eislöwen Dresden ausgeschlossen)
+    if (!istLoewen(text, href)) return;
+
+    // Datum
     let datum = '';
-    const datumEl = container.find('time,[class*="date"],[class*="datum"]').first();
+    const datumEl  = container.find('time,[class*="date"],[class*="datum"]').first();
     const datumRaw = datumEl.attr('datetime') || datumEl.text().trim();
     const mIso = datumRaw.match(/(\d{4})-(\d{2})-(\d{2})/);
-    const mDe  = datumRaw.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+    const mDe  = datumRaw.match(/(\d{2}\.\d{2}\.\d{4})/);
     if (mIso) datum = `${mIso[3]}.${mIso[2]}.${mIso[1]}`;
-    else if (mDe) datum = datumRaw.match(/(\d{2}\.\d{2}\.\d{4})/)[0];
+    else if (mDe) datum = mDe[0];
 
-    // Bild aus Container
+    // Bild
     let bildUrl = '';
     const img = container.find('img').first();
     if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
@@ -360,18 +367,15 @@ async function scrapeDelSeite(page, url) {
     });
   });
 
-  console.log(`  [DEL] ${items.length} Artikel auf Seite gefunden.`);
+  console.log(`  [DEL] ${items.length} Löwen-Artikel auf Seite gefunden.`);
 
-  // Pagination: ?page=N, /page/N, /news/N
+  // Pagination
   const paginationMap = {};
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    const m1 = href.match(/[?&]page=(\d+)/);
-    const m2 = href.match(/\/page\/(\d+)/);
-    const m3 = href.match(/\/news\/(\d+)$/);
-    const match = m1 || m2 || m3;
-    if (match) {
-      const num = parseInt(match[1]);
+    const m = href.match(/[?&]page=(\d+)/) || href.match(/\/page\/(\d+)/) || href.match(/\/news\/(\d+)$/);
+    if (m) {
+      const num = parseInt(m[1]);
       if (num > 1) paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     }
   });

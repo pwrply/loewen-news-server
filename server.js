@@ -231,10 +231,12 @@ async function scrapeNewsSeite(page, url) {
 
 // Vollscan: nur wenn DB leer ist
 async function scrapeNewsVollscan() {
-  const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
-  if (parseInt(count.rows[0].count) > 0) {
-    console.log(`[INFO] Löwen News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
-    return;
+  if (DB_AKTIV) {
+    const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
+    if (parseInt(count.rows[0].count) > 0) {
+      console.log(`[INFO] Löwen News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
+      return;
+    }
   }
   console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (DB leer)...`);
   let b;
@@ -352,10 +354,12 @@ async function scrapeDelSeite(page, url) {
 }
 
 async function scrapeDelVollscan() {
-  const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='del'");
-  if (parseInt(count.rows[0].count) > 0) {
-    console.log(`[INFO] DEL News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
-    return;
+  if (DB_AKTIV) {
+    const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='del'");
+    if (parseInt(count.rows[0].count) > 0) {
+      console.log(`[INFO] DEL News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
+      return;
+    }
   }
   console.log(`[${new Date().toISOString()}] DEL News: Vollscan (DB leer)...`);
   let b;

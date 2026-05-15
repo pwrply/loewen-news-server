@@ -238,8 +238,13 @@ async function scrapeNewsSeite(page, url) {
   return { items, paginationMap };
 }
 
-// Vollscan: nur wenn DB leer ist
+// Vollscan: nur wenn Cache/DB leer ist
 async function scrapeNewsVollscan() {
+  // Im In-Memory-Modus: Cache-Länge prüfen
+  if (!DB_AKTIV && newsCache.length > 0) {
+    console.log(`[INFO] Löwen News: Cache hat bereits ${newsCache.length} Artikel — kein Vollscan nötig.`);
+    return;
+  }
   if (DB_AKTIV) {
     const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
     if (parseInt(count.rows[0].count) > 0) {
@@ -305,12 +310,6 @@ async function scrapeNewsUpdate() {
 // MARK: - DEL News Scraper
 // ─────────────────────────────────────────────
 
-const excludeKeywords = ['dresden','eislöwen','eisloewen','berlin','münchen','muenchen',
-  'mannheim','bremerhaven','wolfsburg','straubing','augsburg','nuernberg','nürnberg',
-  'ingolstadt','iserlohn','krefeld','schwenningen','duesseldorf','düsseldorf','bietigheim'];
-const loewenKeywords = ['frankfurt','loewen frankfurt'];
-const loewenRegex    = /(?<![a-z])löwen(?![a-z])/i;
-
 async function scrapeDelSeite(page, url) {
   const items = [];
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -348,10 +347,6 @@ async function scrapeDelSeite(page, url) {
     const img = container.find('img').first();
     if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
 
-    const tL = text.toLowerCase(), hL = href.toLowerCase();
-    if (excludeKeywords.some(k => tL.includes(k) || hL.includes(k))) return;
-    if (!loewenKeywords.some(k => tL.includes(k) || hL.includes(k)) && !loewenRegex.test(text)) return;
-
     gesehenUrls.add(fullUrl);
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),
@@ -365,14 +360,16 @@ async function scrapeDelSeite(page, url) {
     });
   });
 
-  // Pagination
+  console.log(`  [DEL] ${items.length} Artikel auf Seite gefunden.`);
+
+  // Pagination: ?page=N, /page/N, /news/N
   const paginationMap = {};
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    // z.B. /news?page=2 oder /news/2
     const m1 = href.match(/[?&]page=(\d+)/);
-    const m2 = href.match(/\/news\/(\d+)$/);
-    const match = m1 || m2;
+    const m2 = href.match(/\/page\/(\d+)/);
+    const m3 = href.match(/\/news\/(\d+)$/);
+    const match = m1 || m2 || m3;
     if (match) {
       const num = parseInt(match[1]);
       if (num > 1) paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
@@ -382,6 +379,10 @@ async function scrapeDelSeite(page, url) {
 }
 
 async function scrapeDelVollscan() {
+  if (!DB_AKTIV && delNewsCache.length > 0) {
+    console.log(`[INFO] DEL News: Cache hat bereits ${delNewsCache.length} Artikel — kein Vollscan nötig.`);
+    return;
+  }
   if (DB_AKTIV) {
     const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='del'");
     if (parseInt(count.rows[0].count) > 0) {

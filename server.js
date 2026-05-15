@@ -33,6 +33,7 @@ async function initDB() {
       kategorie   TEXT,
       quelle      TEXT,
       quelletyp   TEXT,
+      bild_url    TEXT,
       erstellt_am TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS tabelle (
@@ -50,6 +51,8 @@ async function initDB() {
       aktualisiert_am       TIMESTAMPTZ DEFAULT NOW()
     );
   `);
+  // bild_url-Spalte nachrüsten falls alte DB
+  await pool.query(`ALTER TABLE news ADD COLUMN IF NOT EXISTS bild_url TEXT;`).catch(() => {});
   console.log('[DB] Tabellen bereit.');
 }
 
@@ -58,17 +61,19 @@ async function ladeNewsAusDB() {
   if (!DB_AKTIV) return;
   const result = await pool.query('SELECT * FROM news ORDER BY erstellt_am DESC LIMIT 500');
   const items = result.rows.map(r => ({
-    id:         r.id,
-    titel:      r.titel,
-    url:        r.url,
-    datum:      r.datum,
-    kategorie:  r.kategorie,
-    quelle:     r.quelle,
-    quelletyp:  r.quelletyp
+    id:        r.id,
+    titel:     r.titel,
+    url:       r.url,
+    datum:     r.datum,
+    kategorie: r.kategorie,
+    quelle:    r.quelle,
+    quelletyp: r.quelletyp,
+    bildUrl:   r.bild_url || ''
   }));
   newsCache    = items.filter(x => x.quelletyp === 'loewen');
   delNewsCache = items.filter(x => x.quelletyp === 'del');
-  console.log(`[DB] ${newsCache.length} Löwen + ${delNewsCache.length} DEL Artikel geladen.`);
+  presseCache  = items.filter(x => x.quelletyp === 'presse');
+  console.log(`[DB] ${newsCache.length} Löwen + ${delNewsCache.length} DEL + ${presseCache.length} Presse Artikel geladen.`);
 }
 
 // Tabelle aus DB laden
@@ -101,10 +106,10 @@ async function speichereNewsInDB(items) {
   for (const item of items) {
     try {
       const r = await pool.query(
-        `INSERT INTO news (id, titel, url, datum, kategorie, quelle, quelletyp)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (url) DO NOTHING`,
-        [item.id, item.titel, item.url, item.datum, item.kategorie, item.quelle, item.quelletyp]
+        `INSERT INTO news (id, titel, url, datum, kategorie, quelle, quelletyp, bild_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (url) DO UPDATE SET bild_url = EXCLUDED.bild_url`,
+        [item.id, item.titel, item.url, item.datum, item.kategorie, item.quelle, item.quelletyp, item.bildUrl || '']
       );
       if (r.rowCount > 0) neu++;
     } catch (_) {}
@@ -143,9 +148,11 @@ async function speichereTabelleInDB(eintraege) {
 
 let newsCache    = [];
 let delNewsCache = [];
+let presseCache  = [];
 let tabelleCache = [];
 let lastUpdated        = null;
 let delLastUpdated     = null;
+let presseLastUpdated  = null;
 let tabelleLastUpdated = null;
 let dbBereit           = false;
 
@@ -156,6 +163,7 @@ let dbBereit           = false;
 const BASE_URL   = 'https://www.loewen-frankfurt.de';
 const NEWS_URL   = `${BASE_URL}/saison/aktuelles`;
 const DEL_URL    = 'https://www.penny-del.org/news';
+const PRESSE_URL = 'https://www.eishockeynews.de/verein/loewen-frankfurt/news';
 
 function kategorisiere(titel) {
   const t = titel.toLowerCase();
@@ -213,7 +221,8 @@ async function scrapeNewsSeite(page, url) {
       datum:     datumMatch ? datumMatch[1] : '',
       kategorie: kategorisiere(sauberTitel),
       quelle:    'Löwen Frankfurt',
-      quelletyp: 'loewen'
+      quelletyp: 'loewen',
+      bildUrl:   ''
     });
   });
 
@@ -251,7 +260,6 @@ async function scrapeNewsVollscan() {
         const { items, paginationMap } = await scrapeNewsSeite(page, nextUrl);
         const neu = await speichereNewsInDB(items);
         gesamtNeu += neu;
-        // Neue Artikel vorne in Cache
         const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
         newsCache = [...neuItems, ...newsCache];
         nextUrl = null;
@@ -317,34 +325,22 @@ async function scrapeDelSeite(page, url) {
     if (excludeKeywords.some(k => tL.includes(k) || hL.includes(k))) return;
     if (!loewenKeywords.some(k => tL.includes(k)) && !loewenRegex.test(text)) return;
     const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
-    const datumMatch = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
-    const sauberTitel = datumMatch ? text.replace(datumMatch[0], '').trim() : text;
-    let datum = datumMatch ? datumMatch[1] : '';
-    if (!datum) {
-      const timeEl = $(el).closest('article,li,div,section').find('time').first();
-      const dt = timeEl.attr('datetime') || timeEl.text().trim();
-      if (dt) datum = isoZuDe(dt) || dt;
-    }
-    if (!datum) {
-      const m = fullUrl.match(/(\d{4})[\/\-](\d{2})[\/\-](\d{2})/);
-      if (m) datum = `${m[3]}.${m[2]}.${m[1]}`;
-    }
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),
-      titel:     sauberTitel,
+      titel:     text,
       url:       fullUrl,
-      datum,
-      kategorie: 'DEL',
-      quelle:    'PENNY DEL',
-      quelletyp: 'del'
+      datum:     '',
+      kategorie: kategorisiere(text),
+      quelle:    'PennyDEL',
+      quelletyp: 'del',
+      bildUrl:   ''
     });
   });
 
   const paginationMap = {};
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    const match = decodeURIComponent(href).match(/currentPage\]=(\d+)/) ||
-                  href.match(/page=(\d+)/) || href.match(/\/news\/(\d+)/);
+    const match = href.match(/\/news\/(\d+)/);
     if (match) {
       const num = parseInt(match[1]);
       paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
@@ -415,6 +411,89 @@ async function scrapeDelUpdate() {
 }
 
 // ─────────────────────────────────────────────
+// MARK: - Presse-Scraper (eishockeynews.de)
+// ─────────────────────────────────────────────
+
+async function scrapePresseNews() {
+  console.log(`[${new Date().toISOString()}] Presse News: Scraping eishockeynews.de...`);
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
+    await page.goto(PRESSE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 2000));
+    const $ = cheerio.load(await page.content());
+    await page.close(); await b.close();
+    b = null;
+
+    const artikel = [];
+    const gesehenUrls = new Set();
+
+    $('article').each((i, el) => {
+      // Link
+      const a = $(el).find('a[href]').first();
+      let href = a.attr('href') || '';
+      if (!href) return;
+      const vollUrl = href.startsWith('http')
+        ? href
+        : `https://www.eishockeynews.de/${href.replace(/^\//, '')}`;
+      if (gesehenUrls.has(vollUrl)) return;
+      gesehenUrls.add(vollUrl);
+
+      // Titel aus h2
+      const titel = $(el).find('h2').first().text().trim();
+      if (!titel || titel.length < 5) return;
+
+      // Datum: suche nach dd.MM.yyyy im Text
+      let datumKurz = '';
+      $(el).find('span').each((_, s) => {
+        const t = $(s).text();
+        const m = t.match(/(\d{2}\.\d{2}\.\d{4})/);
+        if (m && !datumKurz) datumKurz = m[1];
+      });
+
+      // Bild-URL: nimm src oder srcset erstes Element
+      let bildUrl = '';
+      const img = $(el).find('img').first();
+      if (img.length) {
+        bildUrl = img.attr('src') || '';
+        if (!bildUrl) {
+          const srcset = img.attr('srcset') || '';
+          bildUrl = srcset.split(',')[0].trim().split(' ')[0];
+        }
+      }
+
+      const id = Buffer.from(vollUrl).toString('base64').slice(-32);
+      artikel.push({
+        id,
+        titel,
+        url:       vollUrl,
+        datum:     datumKurz,
+        kategorie: 'Presse',
+        quelle:    'Eishockey NEWS',
+        quelletyp: 'presse',
+        bildUrl:   bildUrl || ''
+      });
+    });
+
+    if (artikel.length > 0) {
+      // Nur neue Artikel vorne in Cache
+      const neuItems = artikel.filter(x => !presseCache.find(c => c.url === x.url));
+      presseCache = [...neuItems, ...presseCache].slice(0, 100);
+      await speichereNewsInDB(artikel);
+      presseLastUpdated = new Date().toISOString();
+      console.log(`[OK] Presse: ${artikel.length} Artikel gescraped, ${neuItems.length} neu.`);
+    } else {
+      console.warn('[WARN] Presse: Keine Artikel gefunden — Seite möglicherweise anders strukturiert.');
+    }
+  } catch(err) {
+    console.error('[FEHLER] Presse Scraper:', err.message);
+    if (b) try { await b.close(); } catch(_) {}
+  }
+}
+
+// ─────────────────────────────────────────────
 // MARK: - Tabellen-Scraper
 // ─────────────────────────────────────────────
 
@@ -470,23 +549,24 @@ async function scrapeTabelle() {
 }
 
 // ─────────────────────────────────────────────
-// MARK: - Artikel-Inhalt Scraper
+// MARK: - Artikel-Detail Scraper
 // ─────────────────────────────────────────────
 
 async function scrapeArticle(url) {
+  const articleBase = new URL(url).origin;
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
     await new Promise(r => setTimeout(r, 1000));
     const $ = cheerio.load(await page.content());
     await page.close(); await b.close();
-    $('header,footer,nav,.cookie,[class*="cookie"],[class*="consent"],script,style,iframe').remove();
-    const titel = $('h1').first().text().trim();
-    const datum = $('time').first().attr('datetime') || $('time').first().text().trim() || '';
-    const articleBase = url.startsWith('https://www.penny-del.org') ? 'https://www.penny-del.org' : BASE_URL;
+    b = null;
+    const titel = $('h1').first().text().trim() || $('title').text().trim();
+    const datumRaw = $('time').first().attr('datetime') || $('[class*="date"]').first().text().trim() || '';
+    const datum = datumRaw.match(/\d{4}-\d{2}-\d{2}/) ? isoZuDe(datumRaw) : datumRaw;
     let bild = '';
     $('article img,.article img,.content img,main img,img').each((i, el) => {
       if (bild) return;
@@ -513,7 +593,8 @@ async function scrapeArticle(url) {
 
 app.get('/api/news', (req, res) => {
   const kategorie = req.query.kategorie;
-  let items = [...newsCache, ...delNewsCache].sort((a,b) => parseDate(b.datum) - parseDate(a.datum));
+  let items = [...newsCache, ...delNewsCache, ...presseCache]
+    .sort((a, b) => parseDate(b.datum) - parseDate(a.datum));
   if (kategorie && kategorie !== 'Alle') items = items.filter(n => n.kategorie === kategorie);
   res.json({ status: 'ok', lastUpdated, count: items.length, items });
 });
@@ -536,18 +617,23 @@ app.get('/api/del-news', (req, res) => {
   res.json({ status: 'ok', lastUpdated: delLastUpdated, count: delNewsCache.length, items: delNewsCache });
 });
 
+app.get('/api/presse-news', (req, res) => {
+  res.json({ status: 'ok', lastUpdated: presseLastUpdated, count: presseCache.length, items: presseCache });
+});
+
 app.post('/api/reset-cache', async (req, res) => {
   try {
     if (DB_AKTIV) {
       await pool.query('DELETE FROM news');
       await pool.query('DELETE FROM tabelle');
     }
-    newsCache = []; delNewsCache = [];
+    newsCache = []; delNewsCache = []; presseCache = [];
     tabelleCache = []; lastUpdated = null;
-    delLastUpdated = null; tabelleLastUpdated = null;
+    delLastUpdated = null; presseLastUpdated = null; tabelleLastUpdated = null;
     res.json({ status: 'ok', message: 'DB geleert, Vollscan läuft neu...' });
     scrapeNewsVollscan();
     setTimeout(() => scrapeDelVollscan(), 90000);
+    setTimeout(() => scrapePresseNews(), 120000);
     setTimeout(() => scrapeTabelle(), 180000);
   } catch(err) {
     res.status(500).json({ error: err.message });
@@ -556,11 +642,12 @@ app.post('/api/reset-cache', async (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({
-    status: 'ok', version: '4.0.0',
-    dbBereit, lastUpdated, delLastUpdated, tabelleLastUpdated,
+    status: 'ok', version: '5.0.0',
+    dbBereit, lastUpdated, delLastUpdated, presseLastUpdated, tabelleLastUpdated,
     loewenArtikel: newsCache.length,
-    delArtikel: delNewsCache.length,
-    tabelleTeams: tabelleCache.length,
+    delArtikel:    delNewsCache.length,
+    presseArtikel: presseCache.length,
+    tabelleTeams:  tabelleCache.length,
     uptime: process.uptime()
   });
 });
@@ -568,9 +655,16 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Löwen Frankfurt News Server',
-    version: '4.0.0',
-    endpoints: ['GET /api/news','GET /api/article?url=...','GET /api/tabelle',
-                'GET /api/del-news','GET /api/health','POST /api/reset-cache']
+    version: '5.0.0',
+    endpoints: [
+      'GET /api/news',
+      'GET /api/article?url=...',
+      'GET /api/tabelle',
+      'GET /api/del-news',
+      'GET /api/presse-news',
+      'GET /api/health',
+      'POST /api/reset-cache'
+    ]
   });
 });
 
@@ -580,6 +674,7 @@ app.get('/', (req, res) => {
 
 cron.schedule('*/5 * * * *',  scrapeNewsUpdate);
 cron.schedule('*/5 * * * *',  scrapeDelUpdate);
+cron.schedule('0 */2 * * *',  scrapePresseNews);   // alle 2 Stunden
 cron.schedule('*/15 * * * *', scrapeTabelle);
 
 // ─────────────────────────────────────────────
@@ -596,14 +691,15 @@ async function startup() {
   await ladeTabelleAusDB();
   lastUpdated = new Date().toISOString();
 
-  // 3. Vollscan nur wenn DB leer, sonst nur Seite-1-Update
-  setTimeout(() => scrapeNewsVollscan(), 5000);        // nach 5 Sek
-  setTimeout(() => scrapeDelVollscan(), 90000);        // nach 1,5 Min
-  setTimeout(() => scrapeTabelle(), 180000);           // nach 3 Min
+  // 3. Scraper starten
+  setTimeout(() => scrapeNewsVollscan(),  5000);    // nach 5 Sek
+  setTimeout(() => scrapeDelVollscan(),   90000);   // nach 1,5 Min
+  setTimeout(() => scrapePresseNews(),    150000);  // nach 2,5 Min
+  setTimeout(() => scrapeTabelle(),       180000);  // nach 3 Min
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server v4.0 läuft auf Port ${PORT}`);
+  console.log(`Server v5.0 läuft auf Port ${PORT}`);
   startup();
 });

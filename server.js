@@ -226,18 +226,7 @@ async function scrapeNewsSeite(page, url) {
 }
 
 // Vollscan: bis zu 30 Seiten beim ersten Start
-async function scrapeNewsVollscan() {
-  if (!DB_AKTIV && newsCache.length > 0) {
-    console.log(`[INFO] Löwen News: Cache hat bereits ${newsCache.length} Artikel — kein Vollscan nötig.`);
-    return;
-  }
-  if (DB_AKTIV) {
-    const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
-    if (parseInt(count.rows[0].count) > 0) {
-      console.log(`[INFO] Löwen News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
-      return;
-    }
-  }
+async function scrapeNewsVollscanInternal() {
   console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten)...`);
   let b;
   try {
@@ -275,7 +264,21 @@ async function scrapeNewsVollscan() {
 
 // Seite-1-Update: läuft alle 5 Min via Cron
 async function scrapeNewsUpdate() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Seite-1-Update...`);
+  // Beim ersten Start: Vollscan wenn DB leer
+  if (!DB_AKTIV && newsCache.length === 0) {
+    console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten) — DB leer beim ersten Start...`);
+    await scrapeNewsVollscanInternal();
+  } else if (DB_AKTIV) {
+    const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
+    if (parseInt(count.rows[0].count) === 0) {
+      console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten) — DB leer beim ersten Start...`);
+      await scrapeNewsVollscanInternal();
+      return;
+    }
+    console.log(`[${new Date().toISOString()}] Löwen News: Seite-1-Update...`);
+  } else {
+    console.log(`[${new Date().toISOString()}] Löwen News: Seite-1-Update...`);
+  }
   let b;
   try {
     b = await getBrowser();
@@ -445,7 +448,6 @@ app.listen(PORT, async () => {
   console.log(`[START] Server läuft auf Port ${PORT}`);
   try {
     await initDB();
-    await leereDatenbank();
     await ladeNewsAusDB();
     await ladeTabelleAusDB();
     dbBereit = true;
@@ -454,6 +456,11 @@ app.listen(PORT, async () => {
     console.error('[FEHLER] DB-Init:', e.message);
     dbBereit = true;
   }
-  setTimeout(() => scrapeNewsVollscan(), 5000);   // Löwen: nach 5 Sek
+  setTimeout(() => scrapeNewsUpdate(), 5000);   // Löwen: nach 5 Sek (Vollscan bei DB leer, sonst Seite-1)
   setTimeout(() => scrapeTabelle(),      30000);  // Tabelle: nach 30 Sek
+
+  // Cron: Löwen Update alle 5 Minuten
+  cron.schedule('*/5 * * * *', async () => {
+    if (dbBereit) await scrapeNewsUpdate();
+  });
 });

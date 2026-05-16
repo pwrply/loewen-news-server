@@ -437,6 +437,19 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
+app.post('/api/admin/reset', async (req, res) => {
+  try {
+    await leereDatenbank();
+    newsCache = [];
+    tabelleCache = [];
+    lastUpdated = null;
+    res.json({ ok: true, message: 'DB geleert. Vollscan startet im Hintergrund...' });
+    scrapeNewsUpdate();
+  } catch(err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
     name:    'Löwen Frankfurt News API',

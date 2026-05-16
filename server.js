@@ -332,7 +332,7 @@ async function scrapeTabelle() {
         torePlus:            0,
         toreMinus:           0,
         punkte:              punkte,
-        istEigenesMannschaft: team.toLowerCase().includes('frankfurt') || team.toLowerCase().includes('löwen')
+        istEigenesMannschaft: team.toLowerCase().includes('löwen frankfurt')
       });
     });
     await page.close(); await b.close();

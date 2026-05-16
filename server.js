@@ -259,22 +259,9 @@ async function scrapeNewsKategorie(page, kategorie, url) {
 }
 
 async function scrapeNewsKategorieAlle(page, kategorie, basisUrl) {
-  let alleItems = [];
-  const MAX_SEITEN = 20;
-  for (let seite = 0; seite < MAX_SEITEN; seite++) {
-    const url = seite === 0
-      ? basisUrl
-      : `${basisUrl}?tx_news_pi1%5BcurrentPage%5D=${seite}`;
-    console.log(`    [${kategorie}] Seite ${seite + 1}: ${url}`);
-    const items = await scrapeNewsKategorie(page, kategorie, url);
-    if (items.length === 0) { console.log(`    [${kategorie}] Keine Artikel mehr — Stop.`); break; }
-    const echteNeu = items.filter(x => !alleItems.find(a => a.url === x.url));
-    if (echteNeu.length === 0) { console.log(`    [${kategorie}] Nur Duplikate — Stop.`); break; }
-    alleItems = [...alleItems, ...echteNeu];
-    await new Promise(r => setTimeout(r, 800));
-  }
-  console.log(`    [${kategorie}] Gesamt: ${alleItems.length} Artikel`);
-  return alleItems;
+  // Nur Hauptseite scrapen (keine Pagination)
+  console.log(`    [${kategorie}] ${basisUrl}`);
+  return await scrapeNewsKategorie(page, kategorie, basisUrl);
 }
 
 async function scrapeNewsVollscanInternal() {

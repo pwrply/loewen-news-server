@@ -392,9 +392,15 @@ async function scrapeDelVollscan() {
   }
   if (DB_AKTIV) {
     const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='del'");
-    if (parseInt(count.rows[0].count) > 0) {
+    if (parseInt(count.rows[0].count) >= 10) {
       console.log(`[INFO] DEL News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
       return;
+    }
+    // Weniger als 10: alte fehlerhafte Einträge löschen und neu scannen
+    if (parseInt(count.rows[0].count) > 0) {
+      await pool.query("DELETE FROM news WHERE quelletyp='del'");
+      delNewsCache = [];
+      console.log(`[INFO] DEL News: ${count.rows[0].count} fehlerhafte Einträge gelöscht, starte Vollscan.`);
     }
   }
   console.log(`[${new Date().toISOString()}] DEL News: Vollscan (DB leer)...`);
@@ -685,9 +691,9 @@ app.post('/api/reset-cache', async (req, res) => {
     delLastUpdated = null; presseLastUpdated = null; tabelleLastUpdated = null;
     res.json({ status: 'ok', message: 'DB geleert, Vollscan läuft neu...' });
     scrapeNewsVollscan();
-    setTimeout(() => scrapeDelVollscan(), 90000);
-    setTimeout(() => scrapePresseNews(), 120000);
-    setTimeout(() => scrapeTabelle(), 180000);
+    setTimeout(() => scrapeDelVollscan(), 15000);
+    setTimeout(() => scrapePresseNews(), 30000);
+    setTimeout(() => scrapeTabelle(), 45000);
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
@@ -746,9 +752,9 @@ async function startup() {
 
   // 3. Scraper starten
   setTimeout(() => scrapeNewsVollscan(),  5000);    // nach 5 Sek
-  setTimeout(() => scrapeDelVollscan(),   90000);   // nach 1,5 Min
-  setTimeout(() => scrapePresseNews(),    150000);  // nach 2,5 Min
-  setTimeout(() => scrapeTabelle(),       180000);  // nach 3 Min
+  setTimeout(() => scrapeDelVollscan(),   15000);   // nach 15 Sek
+  setTimeout(() => scrapePresseNews(),    30000);   // nach 30 Sek
+  setTimeout(() => scrapeTabelle(),       45000);   // nach 45 Sek
 }
 
 const PORT = process.env.PORT || 3000;

@@ -264,31 +264,78 @@ async function scrapeNewsKategorieAlle(page, kategorie, basisUrl) {
   return await scrapeNewsKategorie(page, kategorie, basisUrl);
 }
 
+async function scrapeNewsAll(page) {
+  const url = 'https://www.loewen-frankfurt.de/saison/aktuelles';
+  console.log(`    [alle] Hauptseite: ${url}`);
+  const items = [];
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await new Promise(r => setTimeout(r, 2000));
+  const html = await page.content();
+  const $ = cheerio.load(html);
+
+  // Alle Artikel-Links von der Hauptseite holen
+  $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+    const href = $(el).attr('href') || '';
+    // Nur echte Artikel-Links — keine Kategorie-Navigations-Links
+    const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
+    const normHref = href.replace(/\/$/, '');
+    if (katPfade.includes(normHref)) return;
+    if (!href.includes('/saison/aktuelles/')) return;
+
+    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+    if (items.find(x => x.url === fullUrl)) return; // Duplikat
+
+    // Titel aus Link oder Kind-Elementen
+    let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim();
+    if (!titel) titel = $(el).clone().children().remove().end().text().trim();
+    if (!titel) titel = $(el).text().trim();
+    titel = titel.replace(/\s+/g, ' ').trim();
+    if (titel.length < 8) return;
+
+    // Datum aus Container
+    let datum = '';
+    const container = $(el).closest('article, li, div');
+    const containerText = container.text();
+    const datumMatch = containerText.match(/(\d{2}\.\d{2}\.\d{4})/);
+    if (datumMatch) datum = datumMatch[1];
+
+    // Kategorie automatisch aus URL oder Titel bestimmen
+    let kategorie = 'Allgemein';
+    if (fullUrl.includes('/vorschau') || titel.toLowerCase().includes('vorschau')) kategorie = 'Vorschau';
+    else if (fullUrl.includes('/spielberichte') || titel.toLowerCase().includes('sieg') || titel.toLowerCase().includes('streif')) kategorie = 'Spielberichte';
+    else if (fullUrl.includes('/team') || titel.toLowerCase().includes('transfer') || titel.toLowerCase().includes('vertrag')) kategorie = 'Team';
+    else if (fullUrl.includes('/fans') || titel.toLowerCase().includes('fan') || titel.toLowerCase().includes('ticket')) kategorie = 'Fans';
+
+    items.push({
+      id:        Buffer.from(fullUrl).toString('base64').slice(-32),
+      titel:     titel,
+      url:       fullUrl,
+      datum:     datum,
+      kategorie: kategorie,
+      quelle:    'Lö¨ııwen Frankfurt',
+      quelletyp: 'loewen',
+      bildUrl:   ''
+    });
+  });
+
+  console.log(`    [alle] ${items.length} Artikel gefunden`);
+  return items;
+}
+
 async function scrapeNewsVollscanInternal() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (alle 4 Kategorien, alle Seiten)...`);
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (Hauptseite - alle Artikel)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    let gesamtNeu = 0;
-    for (const [kat, katUrl] of Object.entries(KATEGORIEN_URL)) {
-      console.log(`  Kategorie: ${kat}`);
-      try {
-        const items = await scrapeNewsKategorieAlle(page, kat, katUrl);
-        const neu = await speichereNewsInDB(items);
-        gesamtNeu += neu;
-        const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
-        newsCache = [...neuItems, ...newsCache];
-        console.log(`    ✓ ${items.length} gesamt, ${neu} neu`);
-      } catch(e) {
-        console.error(`  [FEHLER] ${kat}:`, e.message);
-      }
-      await new Promise(r => setTimeout(r, 1000));
-    }
+    const items = await scrapeNewsAll(page);
+    const neu = await speichereNewsInDB(items);
+    const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
+    newsCache = [...neuItems, ...newsCache];
     await page.close(); await b.close();
     lastUpdated = new Date().toISOString();
-    console.log(`[OK] Löwen Vollscan: ${gesamtNeu} neue Artikel.`);
+    console.log(`[OK] Löwen Vollscan: ${neu} neue Artikel.`);
   } catch(err) {
     console.error('[FEHLER] Löwen Vollscan:', err.message);
     if (b) try { await b.close(); } catch(_) {}
@@ -305,29 +352,20 @@ async function scrapeNewsUpdate() {
       return;
     }
   }
-  // Update: erste Seite jeder Kategorie checken (nicht Hauptseite, damit Kategorien korrekt bleiben)
-  console.log(`[${new Date().toISOString()}] Löwen News: Update (alle Kategorien Seite 1)...`);
+  // Update: Hauptseite prüfen
+  console.log(`[${new Date().toISOString()}] Löwen News: Update (Hauptseite)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    let gesamtNeu = 0;
-    for (const [kat, katUrl] of Object.entries(KATEGORIEN_URL)) {
-      try {
-        const items = await scrapeNewsKategorie(page, kat, katUrl);
-        const neu = await speichereNewsInDB(items);
-        gesamtNeu += neu;
-        if (neu > 0) {
-          const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
-          newsCache = [...neuItems, ...newsCache];
-        }
-      } catch(e) { console.error(`  [FEHLER] Update ${kat}:`, e.message); }
-      await new Promise(r => setTimeout(r, 800));
-    }
+    const items = await scrapeNewsAll(page);
+    const neu = await speichereNewsInDB(items);
+    const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
+    newsCache = [...neuItems, ...newsCache];
     await page.close(); await b.close();
-    if (gesamtNeu > 0) lastUpdated = new Date().toISOString();
-    console.log(`[OK] Löwen Update: ${gesamtNeu} neue Artikel.`);
+    if (neu > 0) lastUpdated = new Date().toISOString();
+    console.log(`[OK] Löwen Update: ${neu} neue Artikel.`);
   } catch(err) {
     console.error('[FEHLER] Löwen Update:', err.message);
     if (b) try { await b.close(); } catch(_) {}

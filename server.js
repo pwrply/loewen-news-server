@@ -403,21 +403,37 @@ async function scrapeDelVollscan() {
       console.log(`[INFO] DEL News: ${count.rows[0].count} fehlerhafte Einträge gelöscht, starte Vollscan.`);
     }
   }
-  console.log(`[${new Date().toISOString()}] DEL News: Vollscan (DB leer)...`);
+  console.log(`[${new Date().toISOString()}] DEL News: Vollscan über 20 Seiten (DB leer)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    // DEL-Seite hat keine Pagination — alle News stehen auf einer Seite
-    console.log(`  DEL Seite 1: ${DEL_URL}`);
-    const { items } = await scrapeDelSeite(page, DEL_URL);
-    const gesamtNeu = await speichereNewsInDB(items);
-    const neuItems = items.filter(x => !delNewsCache.find(c => c.url === x.url));
-    delNewsCache = [...neuItems, ...delNewsCache];
+    let gesamtNeu = 0;
+    const MAX_SEITEN = 20;
+    for (let p = 1; p <= MAX_SEITEN; p++) {
+      // Seite 1 = Basis-URL, weitere Seiten mit ?page=N
+      const url = p === 1 ? DEL_URL : `${DEL_URL}?page=${p}`;
+      console.log(`  DEL Seite ${p}/${MAX_SEITEN}: ${url}`);
+      try {
+        const { items } = await scrapeDelSeite(page, url);
+        if (items.length === 0 && p > 1) {
+          console.log(`  [DEL] Keine weiteren Artikel auf Seite ${p} — Vollscan beendet.`);
+          break;
+        }
+        const neu = await speichereNewsInDB(items);
+        gesamtNeu += neu;
+        const neuItems = items.filter(x => !delNewsCache.find(c => c.url === x.url));
+        delNewsCache = [...neuItems, ...delNewsCache];
+      } catch(e) {
+        console.error(`  [DEL] Fehler Seite ${p}:`, e.message);
+        break;
+      }
+      await new Promise(r => setTimeout(r, 1500));
+    }
     await page.close(); await b.close();
     delLastUpdated = new Date().toISOString();
-    console.log(`[OK] DEL Vollscan: ${gesamtNeu} Artikel in DB gespeichert.`);
+    console.log(`[OK] DEL Vollscan: ${gesamtNeu} neue Löwen-Artikel in DB gespeichert.`);
   } catch(err) {
     console.error('[FEHLER] DEL Vollscan:', err.message);
     if (b) try { await b.close(); } catch(_) {}

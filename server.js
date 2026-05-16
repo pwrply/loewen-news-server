@@ -303,12 +303,12 @@ async function scrapeNewsAll(page) {
     let kategorie = 'Allgemein';
     const titelLower = titel.toLowerCase();
     
-    // Vorschau:明确的关键词
+    // Vorschau: klare Keywords
     if (fullUrl.includes('/vorschau') || titelLower.includes('vorschau') || titelLower.includes('bevor')) kategorie = 'Vorschau';
     // Spielberichte: klare Spiel-Referenzen
     else if (fullUrl.includes('/spielberichte') || titelLower.includes('sieg') || titelLower.includes('streif') || titelLower.includes('spiel') || titelLower.includes('niederlage')) kategorie = 'Spielberichte';
     // Team: ALLE Spieler/Team-bezogenen Keywords
-    else if (fullUrl.includes('/team') || titelLower.includes('transfer') || titelLower.includes('vertrag') || titelLower.includes('spieler') || titelLower.includes('kader') || titelLower.includes('team') || titelLower.includes('spieler') || titelLower.includes('lee') || titelLower.includes('gesch') || titelLower.includes('vorstellen') || titelLower.includes('profil')) kategorie = 'Team';
+    else if (fullUrl.includes('/team') || titelLower.includes('transfer') || titelLower.includes('vertrag') || titelLower.includes('spieler') || titelLower.includes('kader') || titelLower.includes('team') || titelLower.includes('lee') || titelLower.includes('gesch') || titelLower.includes('vorstellen') || titelLower.includes('profil')) kategorie = 'Team';
     // Fans: klare Fan-Referenzen
     else if (fullUrl.includes('/fans') || titelLower.includes('fan') || titelLower.includes('ticket') || titelLower.includes('merch') || titelLower.includes('shop')) kategorie = 'Fans';
 
@@ -318,7 +318,7 @@ async function scrapeNewsAll(page) {
       url:       fullUrl,
       datum:     datum,
       kategorie: kategorie,
-      quelle:    'Lö¨ııwen Frankfurt',
+      quelle:    'Löwen Frankfurt',
       quelletyp: 'loewen',
       bildUrl:   ''
     });

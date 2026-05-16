@@ -187,7 +187,7 @@ function kategorisiere(titel, katTag) {
       t.includes('trainer')) return 'Team';
   if (t.includes('fan') || t.includes('dauerkar') || t.includes('ticket') ||
       t.includes('merchandise') || t.includes('shop') || t.includes('gewinnspiel')) return 'Fans';
-  return 'Allgemein';
+  return 'Team';
 }
 
 async function getBrowser() {
@@ -216,13 +216,14 @@ async function scrapeNewsKategorie(page, kategorie, url) {
   const html = await page.content();
   const $ = cheerio.load(html);
 
-  // Alle Links die auf /saison/aktuelles/details/ zeigen
-  $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+  // Alle Links die auf Artikel-Detail-Seiten zeigen
+  $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    if (!href.includes('/saison/aktuelles/') || href === '/saison/aktuelles') return;
-    // Nur Detail-Links, keine Kategorie-Links
-    const skipPaths = ['/vorschau', '/spielberichte', '/team', '/fans', '/aktuelles'];
-    if (skipPaths.some(p => href.endsWith(p) || href === '/saison/aktuelles' + p)) return;
+    if (!href.includes('/saison/aktuelles/')) return;
+    // Nur echte Artikel-Links — Kategorie-Navigations-Links überspringen
+    const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
+    const normHref = href.replace(/\/$/, '');
+    if (katPfade.includes(normHref)) return;
 
     const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
     if (items.find(x => x.url === fullUrl)) return; // Duplikat

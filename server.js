@@ -51,15 +51,22 @@ async function initDB() {
       aktualisiert_am       TIMESTAMPTZ DEFAULT NOW()
     );
   `);
-  // bild_url-Spalte nachrüsten falls alte DB
   await pool.query(`ALTER TABLE news ADD COLUMN IF NOT EXISTS bild_url TEXT;`).catch(() => {});
   console.log('[DB] Tabellen bereit.');
+}
+
+// DB komplett leeren (news + tabelle)
+async function leereDatenbank() {
+  if (!DB_AKTIV) return;
+  await pool.query('DELETE FROM news');
+  await pool.query('DELETE FROM tabelle');
+  console.log('[DB] Datenbank komplett geleert.');
 }
 
 // Alle News aus DB in den In-Memory-Cache laden
 async function ladeNewsAusDB() {
   if (!DB_AKTIV) return;
-  const result = await pool.query('SELECT * FROM news ORDER BY erstellt_am DESC LIMIT 500');
+  const result = await pool.query('SELECT * FROM news ORDER BY erstellt_am DESC LIMIT 1000');
   const items = result.rows.map(r => ({
     id:        r.id,
     titel:     r.titel,
@@ -99,7 +106,7 @@ async function ladeTabelleAusDB() {
   }
 }
 
-// Artikel in DB speichern (neue werden eingefügt, existierende ignoriert)
+// Artikel in DB speichern — neue einfügen, existierende Bild-URL aktualisieren
 async function speichereNewsInDB(items) {
   if (!DB_AKTIV) return items.length;
   let neu = 0;
@@ -238,9 +245,8 @@ async function scrapeNewsSeite(page, url) {
   return { items, paginationMap };
 }
 
-// Vollscan: nur wenn Cache/DB leer ist
+// Vollscan über bis zu 30 Seiten (läuft nur wenn DB leer)
 async function scrapeNewsVollscan() {
-  // Im In-Memory-Modus: Cache-Länge prüfen
   if (!DB_AKTIV && newsCache.length > 0) {
     console.log(`[INFO] Löwen News: Cache hat bereits ${newsCache.length} Artikel — kein Vollscan nötig.`);
     return;
@@ -252,7 +258,7 @@ async function scrapeNewsVollscan() {
       return;
     }
   }
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (DB leer)...`);
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten)...`);
   let b;
   try {
     b = await getBrowser();
@@ -260,7 +266,7 @@ async function scrapeNewsVollscan() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     let nextUrl = NEWS_URL, p = 1, gesamtNeu = 0;
     while (nextUrl && p <= 30) {
-      console.log(`  Seite ${p}: ${nextUrl}`);
+      console.log(`  Löwen Seite ${p}: ${nextUrl}`);
       try {
         const { items, paginationMap } = await scrapeNewsSeite(page, nextUrl);
         const neu = await speichereNewsInDB(items);
@@ -268,7 +274,7 @@ async function scrapeNewsVollscan() {
         const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
         newsCache = [...neuItems, ...newsCache];
         nextUrl = null;
-        const avail = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a,b)=>a-b);
+        const avail = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a, b) => a - b);
         if (avail.length > 0) { nextUrl = paginationMap[avail[0]]; p = avail[0] - 1; }
       } catch(e) { console.error(`  Fehler Seite ${p}:`, e.message); break; }
       p++;
@@ -276,7 +282,7 @@ async function scrapeNewsVollscan() {
     }
     await page.close(); await b.close();
     lastUpdated = new Date().toISOString();
-    console.log(`[OK] Löwen Vollscan: ${gesamtNeu} Artikel in DB gespeichert.`);
+    console.log(`[OK] Löwen Vollscan abgeschlossen: ${gesamtNeu} neue Artikel.`);
   } catch(err) {
     console.error('[FEHLER] Löwen Vollscan:', err.message);
     if (b) try { await b.close(); } catch(_) {}
@@ -310,7 +316,7 @@ async function scrapeNewsUpdate() {
 // MARK: - DEL News Scraper
 // ─────────────────────────────────────────────
 
-// Filterregel: NUR Titeltext prüfen, NICHT href (DEL-Slugs enthalten keinen Teamnamen)
+// Filter: nur Artikel mit Löwen-Bezug im Titel
 function istLoewen(text) {
   const t = text.toLowerCase();
   if (t.includes('eislöwen') || t.includes('eisloewen') || t.includes('dresden')) return false;
@@ -321,29 +327,22 @@ async function scrapeDelSeite(page, url) {
   const items = [];
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
   await new Promise(r => setTimeout(r, 3000));
-  const html = await page.content();
-
-  const $ = cheerio.load(html);
+  const $ = cheerio.load(await page.content());
 
   const gesehenUrls = new Set();
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    // DEL-Artikel-Links: /news/detail/...
     if (!href.includes('/news/detail/')) return;
     const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     if (gesehenUrls.has(fullUrl)) return;
 
-    // Text: eigener Text ODER Überschrift im Container
     const eigenerText  = $(el).text().trim();
     const container    = $(el).closest('article, .news-item, .teaser, .card, li, div');
     const ueberschrift = container.find('h1,h2,h3,h4').first().text().trim();
     const text = ueberschrift.length > 10 ? ueberschrift : eigenerText;
     if (text.length <= 10) return;
-
-    // Filter: nur Titeltext (href-Slug enthält keinen Teamnamen bei DEL)
     if (!istLoewen(text)) return;
 
-    // Datum
     let datum = '';
     const datumEl  = container.find('time,[class*="date"],[class*="datum"]').first();
     const datumRaw = datumEl.attr('datetime') || datumEl.text().trim();
@@ -352,7 +351,6 @@ async function scrapeDelSeite(page, url) {
     if (mIso) datum = `${mIso[3]}.${mIso[2]}.${mIso[1]}`;
     else if (mDe) datum = mDe[0];
 
-    // Bild
     let bildUrl = '';
     const img = container.find('img').first();
     if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
@@ -371,20 +369,10 @@ async function scrapeDelSeite(page, url) {
   });
 
   console.log(`  [DEL] ${items.length} Löwen-Artikel auf Seite gefunden.`);
-
-  // Pagination
-  const paginationMap = {};
-  $('a[href]').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    const m = href.match(/[?&]page=(\d+)/) || href.match(/\/page\/(\d+)/) || href.match(/\/news\/(\d+)$/);
-    if (m) {
-      const num = parseInt(m[1]);
-      if (num > 1) paginationMap[num] = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
-    }
-  });
-  return { items, paginationMap };
+  return { items };
 }
 
+// Vollscan über 30 Seiten (läuft nur wenn DB leer)
 async function scrapeDelVollscan() {
   if (!DB_AKTIV && delNewsCache.length > 0) {
     console.log(`[INFO] DEL News: Cache hat bereits ${delNewsCache.length} Artikel — kein Vollscan nötig.`);
@@ -392,29 +380,21 @@ async function scrapeDelVollscan() {
   }
   if (DB_AKTIV) {
     const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='del'");
-    if (parseInt(count.rows[0].count) >= 10) {
+    if (parseInt(count.rows[0].count) > 0) {
       console.log(`[INFO] DEL News: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
       return;
     }
-    // Weniger als 10: alte fehlerhafte Einträge löschen und neu scannen
-    if (parseInt(count.rows[0].count) > 0) {
-      await pool.query("DELETE FROM news WHERE quelletyp='del'");
-      delNewsCache = [];
-      console.log(`[INFO] DEL News: ${count.rows[0].count} fehlerhafte Einträge gelöscht, starte Vollscan.`);
-    }
   }
-  console.log(`[${new Date().toISOString()}] DEL News: Vollscan über 20 Seiten (DB leer)...`);
+  console.log(`[${new Date().toISOString()}] DEL News: Vollscan (bis 30 Seiten)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     let gesamtNeu = 0;
-    const MAX_SEITEN = 20;
-    for (let p = 1; p <= MAX_SEITEN; p++) {
-      // Seite 1 = Basis-URL, weitere Seiten mit ?page=N
+    for (let p = 1; p <= 30; p++) {
       const url = p === 1 ? DEL_URL : `${DEL_URL}?page=${p}`;
-      console.log(`  DEL Seite ${p}/${MAX_SEITEN}: ${url}`);
+      console.log(`  DEL Seite ${p}/30: ${url}`);
       try {
         const { items } = await scrapeDelSeite(page, url);
         if (items.length === 0 && p > 1) {
@@ -433,13 +413,14 @@ async function scrapeDelVollscan() {
     }
     await page.close(); await b.close();
     delLastUpdated = new Date().toISOString();
-    console.log(`[OK] DEL Vollscan: ${gesamtNeu} neue Löwen-Artikel in DB gespeichert.`);
+    console.log(`[OK] DEL Vollscan abgeschlossen: ${gesamtNeu} neue Löwen-Artikel.`);
   } catch(err) {
     console.error('[FEHLER] DEL Vollscan:', err.message);
     if (b) try { await b.close(); } catch(_) {}
   }
 }
 
+// Seite-1-Update: läuft alle 5 Min
 async function scrapeDelUpdate() {
   console.log(`[${new Date().toISOString()}] DEL News: Seite-1-Update...`);
   let b;
@@ -463,107 +444,155 @@ async function scrapeDelUpdate() {
 }
 
 // ─────────────────────────────────────────────
-// MARK: - Presse-Scraper (eishockeynews.de)
+// MARK: - Presse-Scraper (hockeyweb.de)
 // ─────────────────────────────────────────────
 
-async function scrapePresseNews() {
-  console.log(`[${new Date().toISOString()}] Presse News: Scraping hockeyweb.de...`);
+async function scrapePresseSeite(page, url) {
+  const items = [];
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await new Promise(r => setTimeout(r, 1500));
+  const $ = cheerio.load(await page.content());
+
+  const gesehenUrls = new Set();
+  const BASE_HOCKEYWEB = 'https://www.hockeyweb.de';
+
+  const selektoren = [
+    'h2 a[href]', 'h3 a[href]', '.entry-title a', '.post-title a',
+    'article a[href]', '.teaser a[href]', '.news-title a'
+  ];
+
+  for (const sel of selektoren) {
+    $(sel).each((i, el) => {
+      const href  = $(el).attr('href') || '';
+      const titel = $(el).text().trim();
+      if (!href || titel.length < 5) return;
+      if (!href.includes('hockeyweb') && !href.startsWith('/')) return;
+      const vollUrl = href.startsWith('http') ? href : `${BASE_HOCKEYWEB}${href}`;
+      if (gesehenUrls.has(vollUrl)) return;
+      gesehenUrls.add(vollUrl);
+
+      const container = $(el).closest('article, .post, .teaser, .entry, li');
+      let datum = '';
+      const datumEl = container.find('time,[class*="date"],[class*="datum"],span').first();
+      const datumRaw = datumEl.attr('datetime') || datumEl.text().trim();
+      const mIso = datumRaw.match(/(\d{4})-(\d{2})-(\d{2})/);
+      const mDe  = datumRaw.match(/(\d{2}\.\d{2}\.\d{4})/);
+      if (mIso) datum = `${mIso[3]}.${mIso[2]}.${mIso[1]}`;
+      else if (mDe) datum = mDe[0];
+
+      let bildUrl = '';
+      const img = container.find('img').first();
+      if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
+
+      items.push({
+        id:        Buffer.from(vollUrl).toString('base64').slice(-32),
+        titel,
+        url:       vollUrl,
+        datum,
+        kategorie: 'Presse',
+        quelle:    'Hockeyweb',
+        quelletyp: 'presse',
+        bildUrl:   bildUrl || ''
+      });
+    });
+    if (items.length > 0) break;
+  }
+
+  // Fallback
+  if (items.length === 0) {
+    $('a[href]').each((i, el) => {
+      const href  = $(el).attr('href') || '';
+      const titel = $(el).text().trim();
+      if (titel.length < 10) return;
+      if (!href.includes('hockeyweb') && !href.startsWith('/')) return;
+      const vollUrl = href.startsWith('http') ? href : `${BASE_HOCKEYWEB}${href}`;
+      if (gesehenUrls.has(vollUrl)) return;
+      gesehenUrls.add(vollUrl);
+      items.push({
+        id:        Buffer.from(vollUrl).toString('base64').slice(-32),
+        titel,
+        url:       vollUrl,
+        datum:     '',
+        kategorie: 'Presse',
+        quelle:    'Hockeyweb',
+        quelletyp: 'presse',
+        bildUrl:   ''
+      });
+    });
+  }
+
+  console.log(`  [Presse] ${items.length} Artikel auf Seite gefunden.`);
+  return { items };
+}
+
+// Vollscan über 30 Seiten (läuft nur wenn DB leer)
+async function scrapePresseVollscan() {
+  if (!DB_AKTIV && presseCache.length > 0) {
+    console.log(`[INFO] Presse: Cache hat bereits ${presseCache.length} Artikel — kein Vollscan nötig.`);
+    return;
+  }
+  if (DB_AKTIV) {
+    const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='presse'");
+    if (parseInt(count.rows[0].count) > 0) {
+      console.log(`[INFO] Presse: DB hat bereits ${count.rows[0].count} Artikel — kein Vollscan nötig.`);
+      return;
+    }
+  }
+  console.log(`[${new Date().toISOString()}] Presse: Vollscan (bis 30 Seiten)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-    await page.goto(PRESSE_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 1500));
-    const $ = cheerio.load(await page.content());
-    await page.close(); await b.close();
-    b = null;
-
-    const artikel = [];
-    const gesehenUrls = new Set();
-    const BASE_HOCKEYWEB = 'https://www.hockeyweb.de';
-
-    // hockeyweb.de: Artikel stehen in h2/h3 mit Links, oder in .entry-title / .post-title
-    const selektoren = [
-      'h2 a[href]', 'h3 a[href]', '.entry-title a', '.post-title a',
-      'article a[href]', '.teaser a[href]', '.news-title a'
-    ];
-
-    for (const sel of selektoren) {
-      $(sel).each((i, el) => {
-        const href  = $(el).attr('href') || '';
-        const titel = $(el).text().trim();
-        if (!href || titel.length < 5) return;
-        if (!href.includes('hockeyweb') && !href.startsWith('/')) return;
-        const vollUrl = href.startsWith('http') ? href : `${BASE_HOCKEYWEB}${href}`;
-        if (gesehenUrls.has(vollUrl)) return;
-        gesehenUrls.add(vollUrl);
-
-        // Container für Datum + Bild
-        const container = $(el).closest('article, .post, .teaser, .entry, li');
-
-        let datum = '';
-        const datumEl = container.find('time,[class*="date"],[class*="datum"],span').first();
-        const datumRaw = datumEl.attr('datetime') || datumEl.text().trim();
-        const mIso = datumRaw.match(/(\d{4})-(\d{2})-(\d{2})/);
-        const mDe  = datumRaw.match(/(\d{2}\.\d{2}\.\d{4})/);
-        if (mIso) datum = `${mIso[3]}.${mIso[2]}.${mIso[1]}`;
-        else if (mDe) datum = mDe[0];
-
-        let bildUrl = '';
-        const img = container.find('img').first();
-        if (img.length) {
-          bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
+    let gesamtNeu = 0;
+    for (let p = 1; p <= 30; p++) {
+      // hockeyweb.de paginiert über /page/N/
+      const url = p === 1 ? PRESSE_URL : `${PRESSE_URL}/page/${p}/`;
+      console.log(`  Presse Seite ${p}/30: ${url}`);
+      try {
+        const { items } = await scrapePresseSeite(page, url);
+        if (items.length === 0 && p > 1) {
+          console.log(`  [Presse] Keine weiteren Artikel auf Seite ${p} — Vollscan beendet.`);
+          break;
         }
-
-        artikel.push({
-          id:        Buffer.from(vollUrl).toString('base64').slice(-32),
-          titel,
-          url:       vollUrl,
-          datum,
-          kategorie: 'Presse',
-          quelle:    'Hockeyweb',
-          quelletyp: 'presse',
-          bildUrl:   bildUrl || ''
-        });
-      });
-      if (artikel.length > 0) break; // erster passender Selektor reicht
+        const neu = await speichereNewsInDB(items);
+        gesamtNeu += neu;
+        const neuItems = items.filter(x => !presseCache.find(c => c.url === x.url));
+        presseCache = [...neuItems, ...presseCache];
+      } catch(e) {
+        console.error(`  [Presse] Fehler Seite ${p}:`, e.message);
+        break;
+      }
+      await new Promise(r => setTimeout(r, 1200));
     }
-
-    // Fallback: alle Links die "/del/" oder "/eishockey/" enthalten
-    if (artikel.length === 0) {
-      $('a[href]').each((i, el) => {
-        const href  = $(el).attr('href') || '';
-        const titel = $(el).text().trim();
-        if (titel.length < 10) return;
-        if (!href.includes('hockeyweb') && !href.startsWith('/')) return;
-        const vollUrl = href.startsWith('http') ? href : `${BASE_HOCKEYWEB}${href}`;
-        if (gesehenUrls.has(vollUrl)) return;
-        gesehenUrls.add(vollUrl);
-        artikel.push({
-          id:        Buffer.from(vollUrl).toString('base64').slice(-32),
-          titel,
-          url:       vollUrl,
-          datum:     '',
-          kategorie: 'Presse',
-          quelle:    'Hockeyweb',
-          quelletyp: 'presse',
-          bildUrl:   ''
-        });
-      });
-    }
-
-    if (artikel.length > 0) {
-      const neuItems = artikel.filter(x => !presseCache.find(c => c.url === x.url));
-      presseCache = [...neuItems, ...presseCache].slice(0, 100);
-      await speichereNewsInDB(artikel);
-      presseLastUpdated = new Date().toISOString();
-      console.log(`[OK] Presse: ${artikel.length} Artikel gescraped, ${neuItems.length} neu.`);
-    } else {
-      console.warn('[WARN] Presse: Keine Artikel gefunden — hockeyweb.de Struktur prüfen.');
-    }
+    await page.close(); await b.close();
+    presseLastUpdated = new Date().toISOString();
+    console.log(`[OK] Presse Vollscan abgeschlossen: ${gesamtNeu} neue Artikel.`);
   } catch(err) {
-    console.error('[FEHLER] Presse Scraper:', err.message);
+    console.error('[FEHLER] Presse Vollscan:', err.message);
+    if (b) try { await b.close(); } catch(_) {}
+  }
+}
+
+// Seite-1-Update: läuft alle 5 Min
+async function scrapePresseUpdate() {
+  console.log(`[${new Date().toISOString()}] Presse: Seite-1-Update...`);
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    const { items } = await scrapePresseSeite(page, PRESSE_URL);
+    await page.close(); await b.close();
+    const neu = await speichereNewsInDB(items);
+    if (neu > 0) {
+      const neuItems = items.filter(x => !presseCache.find(c => c.url === x.url));
+      presseCache = [...neuItems, ...presseCache].slice(0, 200);
+      presseLastUpdated = new Date().toISOString();
+    }
+    console.log(`[OK] Presse Update: ${neu} neue Artikel.`);
+  } catch(err) {
+    console.error('[FEHLER] Presse Update:', err.message);
     if (b) try { await b.close(); } catch(_) {}
   }
 }
@@ -592,30 +621,28 @@ async function scrapeTabelle() {
       const rang      = parseInt($(cols[0]).text().trim()) || (i + 1);
       const team      = $(cols[1]).text().trim().replace(/\s+/g, ' ');
       const spiele    = parseInt($(cols[2]).text().trim()) || 0;
-      const punkte    = parseInt($(cols[3]).text().trim()) || 0;
-      const siege     = parseInt($(cols[4]).text().trim()) || 0;
-      const otSiege   = parseInt($(cols[5]).text().trim()) || 0;
-      const otNied    = parseInt($(cols[6]).text().trim()) || 0;
-      const nieder    = parseInt($(cols[7]).text().trim()) || 0;
-      const toreParts = ($(cols[8]).text().trim() || '0:0').split(':');
-      if (!team || team.length < 2) return;
-      eintraege.push({
-        rang, team, spiele, siege, otSiege,
-        otNiederlagen: otNied, niederlagen: nieder,
-        torePlus: parseInt(toreParts[0]) || 0,
-        toreMinus: parseInt(toreParts[1]) || 0,
-        punkte,
-        istEigenesMannschaft: team.toLowerCase().includes('frankfurt')
-      });
+      const siege     = parseInt($(cols[3]).text().trim()) || 0;
+      const otSiege   = parseInt($(cols[4]).text().trim()) || 0;
+      const otNieder  = parseInt($(cols[5]).text().trim()) || 0;
+      const nieder    = parseInt($(cols[6]).text().trim()) || 0;
+      const toreStr   = $(cols[7]).text().trim();
+      const toreParts = toreStr.split(':');
+      const torePlus  = parseInt(toreParts[0]) || 0;
+      const toreMinus = parseInt(toreParts[1]) || 0;
+      const punkte    = parseInt($(cols[8]).text().trim()) || 0;
+      if (!team || team.length < 3) return;
+      const istEigen  = team.toLowerCase().includes('frankfurt') || team.toLowerCase().includes('löwen');
+      eintraege.push({ rang, team, spiele, siege, otSiege, otNiederlagen: otNieder,
+                       niederlagen: nieder, torePlus, toreMinus, punkte, istEigenesMannschaft: istEigen });
     });
 
     if (eintraege.length >= 10) {
-      await speichereTabelleInDB(eintraege);
       tabelleCache = eintraege;
       tabelleLastUpdated = new Date().toISOString();
-      console.log(`[OK] DEL Tabelle: ${eintraege.length} Teams gespeichert.`);
+      await speichereTabelleInDB(eintraege);
+      console.log(`[OK] Tabelle: ${eintraege.length} Teams gespeichert.`);
     } else {
-      console.warn(`[WARN] Tabelle: nur ${eintraege.length} Einträge — nicht gespeichert.`);
+      console.warn(`[WARN] Tabelle: Nur ${eintraege.length} Einträge — möglicherweise Ladefehler.`);
     }
   } catch(err) {
     console.error('[FEHLER] Tabelle:', err.message);
@@ -696,20 +723,18 @@ app.get('/api/presse-news', (req, res) => {
   res.json({ status: 'ok', lastUpdated: presseLastUpdated, count: presseCache.length, items: presseCache });
 });
 
+// Reset: DB leeren + Vollscans neu starten
 app.post('/api/reset-cache', async (req, res) => {
   try {
-    if (DB_AKTIV) {
-      await pool.query('DELETE FROM news');
-      await pool.query('DELETE FROM tabelle');
-    }
+    await leereDatenbank();
     newsCache = []; delNewsCache = []; presseCache = [];
     tabelleCache = []; lastUpdated = null;
     delLastUpdated = null; presseLastUpdated = null; tabelleLastUpdated = null;
-    res.json({ status: 'ok', message: 'DB geleert, Vollscan läuft neu...' });
+    res.json({ status: 'ok', message: 'DB geleert — Vollscans starten...' });
     scrapeNewsVollscan();
-    setTimeout(() => scrapeDelVollscan(), 15000);
-    setTimeout(() => scrapePresseNews(), 30000);
-    setTimeout(() => scrapeTabelle(), 45000);
+    setTimeout(() => scrapeDelVollscan(),    20000);
+    setTimeout(() => scrapePresseVollscan(), 40000);
+    setTimeout(() => scrapeTabelle(),        60000);
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
@@ -717,7 +742,7 @@ app.post('/api/reset-cache', async (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({
-    status: 'ok', version: '5.0.0',
+    status: 'ok', version: '6.0.0',
     dbBereit, lastUpdated, delLastUpdated, presseLastUpdated, tabelleLastUpdated,
     loewenArtikel: newsCache.length,
     delArtikel:    delNewsCache.length,
@@ -730,7 +755,7 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'Löwen Frankfurt News Server',
-    version: '5.0.0',
+    version: '6.0.0',
     endpoints: [
       'GET /api/news',
       'GET /api/article?url=...',
@@ -744,37 +769,34 @@ app.get('/', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// MARK: - Cron Jobs
+// MARK: - Cron Jobs (alle 5 Min: nur Seite 1)
 // ─────────────────────────────────────────────
 
-cron.schedule('*/5 * * * *',  scrapeNewsUpdate);
-cron.schedule('*/5 * * * *',  scrapeDelUpdate);
-cron.schedule('0 */2 * * *',  scrapePresseNews);   // alle 2 Stunden
-cron.schedule('*/15 * * * *', scrapeTabelle);
+cron.schedule('*/5 * * * *',  scrapeNewsUpdate);    // Löwen Seite 1
+cron.schedule('*/5 * * * *',  scrapeDelUpdate);     // DEL Seite 1
+cron.schedule('*/5 * * * *',  scrapePresseUpdate);  // Presse Seite 1
+cron.schedule('*/15 * * * *', scrapeTabelle);       // Tabelle alle 15 Min
 
 // ─────────────────────────────────────────────
 // MARK: - Startup
 // ─────────────────────────────────────────────
 
 async function startup() {
-  // 1. DB initialisieren
+  // 1. DB initialisieren & komplett leeren
   await initDB();
+  await leereDatenbank();
   dbBereit = true;
 
-  // 2. Gespeicherte Daten sofort in Cache laden
-  await ladeNewsAusDB();
-  await ladeTabelleAusDB();
-  lastUpdated = new Date().toISOString();
-
-  // 3. Scraper starten
-  setTimeout(() => scrapeNewsVollscan(),  5000);    // nach 5 Sek
-  setTimeout(() => scrapeDelVollscan(),   15000);   // nach 15 Sek
-  setTimeout(() => scrapePresseNews(),    30000);   // nach 30 Sek
-  setTimeout(() => scrapeTabelle(),       45000);   // nach 45 Sek
+  // 2. Vollscans gestaffelt starten (Browser-Ressourcen schonen)
+  console.log('[STARTUP] Starte Vollscans für alle Quellen...');
+  setTimeout(() => scrapeNewsVollscan(),    5000);    // Löwen: nach 5 Sek
+  setTimeout(() => scrapeDelVollscan(),    20000);    // DEL:   nach 20 Sek
+  setTimeout(() => scrapePresseVollscan(), 40000);    // Presse: nach 40 Sek
+  setTimeout(() => scrapeTabelle(),        60000);    // Tabelle: nach 60 Sek
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server v5.0 läuft auf Port ${PORT}`);
+  console.log(`Server v6.0 läuft auf Port ${PORT}`);
   startup();
 });

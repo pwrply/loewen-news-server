@@ -320,13 +320,27 @@ function istLoewen(text, href) {
 async function scrapeDelSeite(page, url) {
   const items = [];
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  await new Promise(r => setTimeout(r, 2000));
-  const $ = cheerio.load(await page.content());
+  await new Promise(r => setTimeout(r, 3000));
+  const html = await page.content();
+
+  // DEBUG: Ersten 3000 Zeichen und alle Links loggen beim ersten Aufruf
+  if (url === DEL_URL) {
+    const linkMatches = html.match(/href="([^"]+)"/g) || [];
+    const newsLinks = linkMatches.filter(l => l.includes('news') || l.includes('artikel') || l.includes('detail'));
+    console.log(`  [DEL-DEBUG] HTML-Länge: ${html.length} Zeichen`);
+    console.log(`  [DEL-DEBUG] News-artige Links:`, newsLinks.slice(0, 20));
+  }
+
+  const $ = cheerio.load(html);
 
   const gesehenUrls = new Set();
+  // Breiter Selektor: alle Links die auf Artikel hindeuten
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    if (!href.includes('/news/') || href.length <= 10) return;
+    // Matche /news/, /artikel/, /detail/, oder news-artige Pfade
+    const istArtikelLink = href.includes('/news/') || href.includes('/artikel/') ||
+                           href.includes('/detail/') || href.match(/\/[a-z-]{10,}\/[a-z0-9-]{10,}/);
+    if (!istArtikelLink || href.length <= 10) return;
     const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     if (gesehenUrls.has(fullUrl)) return;
 

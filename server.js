@@ -310,11 +310,11 @@ async function scrapeNewsUpdate() {
 // MARK: - DEL News Scraper
 // ─────────────────────────────────────────────
 
-// Filterregel: Artikel muss Frankfurt/Löwen enthalten, aber NICHT Eislöwen Dresden
-function istLoewen(text, href) {
-  const t = (text + ' ' + href).toLowerCase();
+// Filterregel: NUR Titeltext prüfen, NICHT href (DEL-Slugs enthalten keinen Teamnamen)
+function istLoewen(text) {
+  const t = text.toLowerCase();
   if (t.includes('eislöwen') || t.includes('eisloewen') || t.includes('dresden')) return false;
-  return t.includes('frankfurt') || t.includes('loewen frankfurt') || /(?<![a-z])löwen(?![a-z])/i.test(text);
+  return t.includes('frankfurt') || t.includes('loewen') || /(?<![a-z])löwen(?![a-z])/i.test(text);
 }
 
 async function scrapeDelSeite(page, url) {
@@ -323,24 +323,13 @@ async function scrapeDelSeite(page, url) {
   await new Promise(r => setTimeout(r, 3000));
   const html = await page.content();
 
-  // DEBUG: Ersten 3000 Zeichen und alle Links loggen beim ersten Aufruf
-  if (url === DEL_URL) {
-    const linkMatches = html.match(/href="([^"]+)"/g) || [];
-    const newsLinks = linkMatches.filter(l => l.includes('news') || l.includes('artikel') || l.includes('detail'));
-    console.log(`  [DEL-DEBUG] HTML-Länge: ${html.length} Zeichen`);
-    console.log(`  [DEL-DEBUG] News-artige Links:`, newsLinks.slice(0, 20));
-  }
-
   const $ = cheerio.load(html);
 
   const gesehenUrls = new Set();
-  // Breiter Selektor: alle Links die auf Artikel hindeuten
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    // Matche /news/, /artikel/, /detail/, oder news-artige Pfade
-    const istArtikelLink = href.includes('/news/') || href.includes('/artikel/') ||
-                           href.includes('/detail/') || href.match(/\/[a-z-]{10,}\/[a-z0-9-]{10,}/);
-    if (!istArtikelLink || href.length <= 10) return;
+    // DEL-Artikel-Links: /news/detail/...
+    if (!href.includes('/news/detail/')) return;
     const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     if (gesehenUrls.has(fullUrl)) return;
 
@@ -351,8 +340,8 @@ async function scrapeDelSeite(page, url) {
     const text = ueberschrift.length > 10 ? ueberschrift : eigenerText;
     if (text.length <= 10) return;
 
-    // Frankfurt/Löwen-Filter (Eislöwen Dresden ausgeschlossen)
-    if (!istLoewen(text, href)) return;
+    // Filter: nur Titeltext (href-Slug enthält keinen Teamnamen bei DEL)
+    if (!istLoewen(text)) return;
 
     // Datum
     let datum = '';
@@ -414,22 +403,12 @@ async function scrapeDelVollscan() {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    let nextUrl = DEL_URL, p = 1, gesamtNeu = 0;
-    while (nextUrl && p <= 30) {
-      console.log(`  DEL Seite ${p}: ${nextUrl}`);
-      try {
-        const { items, paginationMap } = await scrapeDelSeite(page, nextUrl);
-        const neu = await speichereNewsInDB(items);
-        gesamtNeu += neu;
-        const neuItems = items.filter(x => !delNewsCache.find(c => c.url === x.url));
-        delNewsCache = [...neuItems, ...delNewsCache];
-        nextUrl = null;
-        const avail = Object.keys(paginationMap).map(Number).filter(n => n > p).sort((a,b)=>a-b);
-        if (avail.length > 0) { nextUrl = paginationMap[avail[0]]; p = avail[0] - 1; }
-      } catch(e) { console.error(`  Fehler DEL Seite ${p}:`, e.message); break; }
-      p++;
-      await new Promise(r => setTimeout(r, 800));
-    }
+    // DEL-Seite hat keine Pagination — alle News stehen auf einer Seite
+    console.log(`  DEL Seite 1: ${DEL_URL}`);
+    const { items } = await scrapeDelSeite(page, DEL_URL);
+    const gesamtNeu = await speichereNewsInDB(items);
+    const neuItems = items.filter(x => !delNewsCache.find(c => c.url === x.url));
+    delNewsCache = [...neuItems, ...delNewsCache];
     await page.close(); await b.close();
     delLastUpdated = new Date().toISOString();
     console.log(`[OK] DEL Vollscan: ${gesamtNeu} Artikel in DB gespeichert.`);

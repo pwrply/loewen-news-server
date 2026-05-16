@@ -316,11 +316,17 @@ async function scrapeNewsUpdate() {
 // MARK: - DEL News Scraper
 // ─────────────────────────────────────────────
 
-// Filter: nur Artikel mit Löwen-Bezug im Titel
+// Filter: Artikel mit Löwen/Frankfurt-Bezug, ohne Dresden/Eislöwen
 function istLoewen(text) {
   const t = text.toLowerCase();
+  // Ausschlussliste zuerst prüfen
   if (t.includes('eislöwen') || t.includes('eisloewen') || t.includes('dresden')) return false;
-  return t.includes('frankfurt') || t.includes('loewen') || /(?<![a-z])löwen(?![a-z])/i.test(text);
+  // Einschlussliste: Frankfurt, Löwen (in allen Schreibweisen), loewen
+  if (t.includes('frankfurt')) return true;
+  if (t.includes('loewen'))    return true;
+  // "löwen" als eigenständiges Wort oder Teil eines Kompositums (z.B. "Löwen-Sieg", "Löwen-Spiel")
+  if (t.includes('löwen'))     return true;
+  return false;
 }
 
 async function scrapeDelSeite(page, url) {
@@ -330,11 +336,15 @@ async function scrapeDelSeite(page, url) {
   const $ = cheerio.load(await page.content());
 
   const gesehenUrls = new Set();
+  let gesamtArtikelAufSeite = 0; // Zählt alle /news/detail/ Links (vor dem Löwen-Filter)
+
   $('a[href]').each((i, el) => {
     const href = $(el).attr('href') || '';
     if (!href.includes('/news/detail/')) return;
     const fullUrl = href.startsWith('http') ? href : `https://www.penny-del.org${href}`;
     if (gesehenUrls.has(fullUrl)) return;
+    gesehenUrls.add(fullUrl);
+    gesamtArtikelAufSeite++;
 
     const eigenerText  = $(el).text().trim();
     const container    = $(el).closest('article, .news-item, .teaser, .card, li, div');
@@ -355,7 +365,6 @@ async function scrapeDelSeite(page, url) {
     const img = container.find('img').first();
     if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
 
-    gesehenUrls.add(fullUrl);
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),
       titel:     text,
@@ -368,8 +377,8 @@ async function scrapeDelSeite(page, url) {
     });
   });
 
-  console.log(`  [DEL] ${items.length} Löwen-Artikel auf Seite gefunden.`);
-  return { items };
+  console.log(`  [DEL] Seite: ${gesamtArtikelAufSeite} Artikel total, ${items.length} mit Löwen-Bezug.`);
+  return { items, gesamtArtikelAufSeite };
 }
 
 // Vollscan über 30 Seiten (läuft nur wenn DB leer)
@@ -396,15 +405,18 @@ async function scrapeDelVollscan() {
       const url = p === 1 ? DEL_URL : `${DEL_URL}?page=${p}`;
       console.log(`  DEL Seite ${p}/30: ${url}`);
       try {
-        const { items } = await scrapeDelSeite(page, url);
-        if (items.length === 0 && p > 1) {
-          console.log(`  [DEL] Keine weiteren Artikel auf Seite ${p} — Vollscan beendet.`);
+        const { items, gesamtArtikelAufSeite } = await scrapeDelSeite(page, url);
+        // Abbruch nur wenn die Seite überhaupt keine Artikel mehr hat (Ende der Pagination)
+        if (gesamtArtikelAufSeite === 0 && p > 1) {
+          console.log(`  [DEL] Seite ${p} leer — Ende der Pagination erreicht.`);
           break;
         }
-        const neu = await speichereNewsInDB(items);
-        gesamtNeu += neu;
-        const neuItems = items.filter(x => !delNewsCache.find(c => c.url === x.url));
-        delNewsCache = [...neuItems, ...delNewsCache];
+        if (items.length > 0) {
+          const neu = await speichereNewsInDB(items);
+          gesamtNeu += neu;
+          const neuItems = items.filter(x => !delNewsCache.find(c => c.url === x.url));
+          delNewsCache = [...neuItems, ...delNewsCache];
+        }
       } catch(e) {
         console.error(`  [DEL] Fehler Seite ${p}:`, e.message);
         break;
@@ -522,7 +534,7 @@ async function scrapePresseSeite(page, url) {
   }
 
   console.log(`  [Presse] ${items.length} Artikel auf Seite gefunden.`);
-  return { items };
+  return { items, gesamtArtikelAufSeite: items.length };
 }
 
 // Vollscan über 30 Seiten (läuft nur wenn DB leer)
@@ -550,15 +562,17 @@ async function scrapePresseVollscan() {
       const url = p === 1 ? PRESSE_URL : `${PRESSE_URL}/page/${p}/`;
       console.log(`  Presse Seite ${p}/30: ${url}`);
       try {
-        const { items } = await scrapePresseSeite(page, url);
-        if (items.length === 0 && p > 1) {
-          console.log(`  [Presse] Keine weiteren Artikel auf Seite ${p} — Vollscan beendet.`);
+        const { items, gesamtArtikelAufSeite } = await scrapePresseSeite(page, url);
+        if (gesamtArtikelAufSeite === 0 && p > 1) {
+          console.log(`  [Presse] Seite ${p} leer — Ende der Pagination erreicht.`);
           break;
         }
-        const neu = await speichereNewsInDB(items);
-        gesamtNeu += neu;
-        const neuItems = items.filter(x => !presseCache.find(c => c.url === x.url));
-        presseCache = [...neuItems, ...presseCache];
+        if (items.length > 0) {
+          const neu = await speichereNewsInDB(items);
+          gesamtNeu += neu;
+          const neuItems = items.filter(x => !presseCache.find(c => c.url === x.url));
+          presseCache = [...neuItems, ...presseCache];
+        }
       } catch(e) {
         console.error(`  [Presse] Fehler Seite ${p}:`, e.message);
         break;

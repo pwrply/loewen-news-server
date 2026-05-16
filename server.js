@@ -158,14 +158,29 @@ let dbBereit           = false;
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
 
-function kategorisiere(titel) {
+function kategorisiere(titel, katTag) {
+  // 1. Priorität: Kategorie direkt von der Website (z.B. aus dem Tag-Element)
+  if (katTag) {
+    const k = katTag.trim().toLowerCase();
+    if (k === 'team')          return 'Team';
+    if (k === 'spielberichte') return 'Spielberichte';
+    if (k === 'vorschau')      return 'Vorschau';
+    if (k === 'fans')          return 'Fans';
+  }
+  // 2. Fallback: Titelbasierte Erkennung
   const t = titel.toLowerCase();
   if (t.includes('vorschau') || t.includes('heimspiel') || t.includes('auswärts')) return 'Vorschau';
   if (t.includes('sieg') || t.includes('niederlage') || t.includes('tore') ||
-      t.includes('gewinnt') || t.includes('verliert') || t.includes('siegt')) return 'Spielberichte';
+      t.includes('gewinnt') || t.includes('verliert') || t.includes('siegt') ||
+      t.includes('0:') || t.includes('1:') || t.includes('2:') || t.includes('3:') ||
+      t.includes('4:') || t.includes('5:') || t.includes('6:') || t.includes('7:')) return 'Spielberichte';
   if (t.includes('transfer') || t.includes('verpflicht') || t.includes('neuzugang') ||
-      t.includes('verlängert') || t.includes('vertrag')) return 'Team';
-  if (t.includes('fan') || t.includes('dauerkar') || t.includes('ticket')) return 'Fans';
+      t.includes('verlängert') || t.includes('vertrag') || t.includes('löwe') ||
+      t.includes('wechselt') || t.includes('wird ein') || t.includes('kehrt zurück') ||
+      t.includes('unterschreibt') || t.includes('kapitän') || t.includes('coach') ||
+      t.includes('trainer')) return 'Team';
+  if (t.includes('fan') || t.includes('dauerkar') || t.includes('ticket') ||
+      t.includes('merchandise') || t.includes('shop') || t.includes('gewinnspiel')) return 'Fans';
   return 'Allgemein';
 }
 
@@ -194,6 +209,8 @@ async function scrapeNewsSeite(page, url) {
   await new Promise(r => setTimeout(r, 800));
   const $ = cheerio.load(await page.content());
 
+  const bekannteKats = ['Team', 'Vorschau', 'Spielberichte', 'Fans'];
+
   $('a').each((i, el) => {
     const href = $(el).attr('href') || '';
     const text = $(el).text().trim();
@@ -201,12 +218,32 @@ async function scrapeNewsSeite(page, url) {
     const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
     const datumMatch = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
     const sauberTitel = datumMatch ? text.replace(datumMatch[0], '').trim() : text;
+
+    // Kategorie aus dem nähesten Eltern-Container lesen
+    let katTag = null;
+    const container = $(el).closest('article, li, div.news-item, div[class*="news"], div[class*="artikel"], div[class*="item"], div[class*="card"]');
+    if (container.length) {
+      const containerText = container.text();
+      for (const k of bekannteKats) {
+        if (containerText.includes(k)) { katTag = k; break; }
+      }
+    }
+    // Falls kein Container gefunden, Geschwister-Elemente des Links prüfen
+    if (!katTag) {
+      const parent = $(el).parent();
+      const siblings = parent.find('*').addBack();
+      siblings.each((j, s) => {
+        const sText = $(s).text().trim();
+        if (bekannteKats.includes(sText)) { katTag = sText; return false; }
+      });
+    }
+
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),
       titel:     sauberTitel,
       url:       fullUrl,
       datum:     datumMatch ? datumMatch[1] : '',
-      kategorie: kategorisiere(sauberTitel),
+      kategorie: kategorisiere(sauberTitel, katTag),
       quelle:    'Löwen Frankfurt',
       quelletyp: 'loewen',
       bildUrl:   ''

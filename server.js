@@ -258,8 +258,27 @@ async function scrapeNewsKategorie(page, kategorie, url) {
   return items;
 }
 
+async function scrapeNewsKategorieAlle(page, kategorie, basisUrl) {
+  let alleItems = [];
+  let seite = 0;
+  const MAX_SEITEN = 20;
+  while (seite < MAX_SEITEN) {
+    const url = seite === 0 ? basisUrl : `${basisUrl}?tx_news_pi1%5Bpage%5D=${seite}`;
+    console.log(`    Seite ${seite + 1}: ${url}`);
+    const items = await scrapeNewsKategorie(page, kategorie, url);
+    if (items.length === 0) break;
+    // Prüfe ob neue URLs dabei sind (Abbruch wenn alles Duplikate)
+    const echteNeu = items.filter(x => !alleItems.find(a => a.url === x.url));
+    if (echteNeu.length === 0) break;
+    alleItems = [...alleItems, ...echteNeu];
+    seite++;
+    await new Promise(r => setTimeout(r, 800));
+  }
+  return alleItems;
+}
+
 async function scrapeNewsVollscanInternal() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (alle 4 Kategorien)...`);
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (alle 4 Kategorien, alle Seiten)...`);
   let b;
   try {
     b = await getBrowser();
@@ -267,14 +286,14 @@ async function scrapeNewsVollscanInternal() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     let gesamtNeu = 0;
     for (const [kat, katUrl] of Object.entries(KATEGORIEN_URL)) {
-      console.log(`  Kategorie: ${kat} → ${katUrl}`);
+      console.log(`  Kategorie: ${kat}`);
       try {
-        const items = await scrapeNewsKategorie(page, kat, katUrl);
+        const items = await scrapeNewsKategorieAlle(page, kat, katUrl);
         const neu = await speichereNewsInDB(items);
         gesamtNeu += neu;
         const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
         newsCache = [...neuItems, ...newsCache];
-        console.log(`    ✓ ${items.length} gefunden, ${neu} neu`);
+        console.log(`    ✓ ${items.length} gesamt, ${neu} neu`);
       } catch(e) {
         console.error(`  [FEHLER] ${kat}:`, e.message);
       }

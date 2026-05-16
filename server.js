@@ -298,21 +298,29 @@ async function scrapeNewsUpdate() {
       return;
     }
   }
-  console.log(`[${new Date().toISOString()}] Löwen News: Update (Seite 1)...`);
+  // Update: erste Seite jeder Kategorie checken (nicht Hauptseite, damit Kategorien korrekt bleiben)
+  console.log(`[${new Date().toISOString()}] Löwen News: Update (alle Kategorien Seite 1)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    const items = await scrapeNewsKategorie(page, 'Allgemein', NEWS_URL);
-    await page.close(); await b.close();
-    const neu = await speichereNewsInDB(items);
-    if (neu > 0) {
-      const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
-      newsCache = [...neuItems, ...newsCache];
-      lastUpdated = new Date().toISOString();
+    let gesamtNeu = 0;
+    for (const [kat, katUrl] of Object.entries(KATEGORIEN_URL)) {
+      try {
+        const items = await scrapeNewsKategorie(page, kat, katUrl);
+        const neu = await speichereNewsInDB(items);
+        gesamtNeu += neu;
+        if (neu > 0) {
+          const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
+          newsCache = [...neuItems, ...newsCache];
+        }
+      } catch(e) { console.error(`  [FEHLER] Update ${kat}:`, e.message); }
+      await new Promise(r => setTimeout(r, 800));
     }
-    console.log(`[OK] Löwen Update: ${neu} neue Artikel.`);
+    await page.close(); await b.close();
+    if (gesamtNeu > 0) lastUpdated = new Date().toISOString();
+    console.log(`[OK] Löwen Update: ${gesamtNeu} neue Artikel.`);
   } catch(err) {
     console.error('[FEHLER] Löwen Update:', err.message);
     if (b) try { await b.close(); } catch(_) {}

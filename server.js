@@ -250,124 +250,55 @@ async function scrapeNewsKategorie(page, kategorie, url) {
   }
   return items;
 }
-  const items = [];
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-  await new Promise(r => setTimeout(r, 800));
-  const $ = cheerio.load(await page.content());
 
-  const bekannteKats = ['Team', 'Vorschau', 'Spielberichte', 'Fans'];
-
-  $('a').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    const text = $(el).text().trim();
-    if (!href.includes('/saison/aktuelles/details/') || text.length <= 10) return;
-    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-    const datumMatch = text.match(/^(\d{2}\.\d{2}\.\d{4})\s+/);
-    const sauberTitel = datumMatch ? text.replace(datumMatch[0], '').trim() : text;
-
-    // Kategorie aus dem nähesten Eltern-Container lesen
-    let katTag = null;
-    const container = $(el).closest('article, li, div.news-item, div[class*="news"], div[class*="artikel"], div[class*="item"], div[class*="card"]');
-    if (container.length) {
-      const containerText = container.text();
-      for (const k of bekannteKats) {
-        if (containerText.includes(k)) { katTag = k; break; }
-      }
-    }
-    // Falls kein Container gefunden, Geschwister-Elemente des Links prüfen
-    if (!katTag) {
-      const parent = $(el).parent();
-      const siblings = parent.find('*').addBack();
-      siblings.each((j, s) => {
-        const sText = $(s).text().trim();
-        if (bekannteKats.includes(sText)) { katTag = sText; return false; }
-      });
-    }
-
-    items.push({
-      id:        Buffer.from(fullUrl).toString('base64').slice(-32),
-      titel:     sauberTitel,
-      url:       fullUrl,
-      datum:     datumMatch ? datumMatch[1] : '',
-      kategorie: kategorisiere(sauberTitel, katTag),
-      quelle:    'Löwen Frankfurt',
-      quelletyp: 'loewen',
-      bildUrl:   ''
-    });
-  });
-
-  const paginationMap = {};
-  $('a[href]').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    const match = decodeURIComponent(href).match(/currentPage\]=(\d+)/);
-    if (match) {
-      const num = parseInt(match[1]);
-      paginationMap[num] = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-    }
-  });
-  return { items, paginationMap };
-}
-
-// Vollscan: bis zu 30 Seiten beim ersten Start
 async function scrapeNewsVollscanInternal() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten)...`);
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (alle 4 Kategorien)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    let nextUrl = NEWS_URL, p = 1, gesamtNeu = 0;
-    while (nextUrl && p <= 30) {
-      console.log(`  Löwen Seite ${p}: ${nextUrl}`);
+    let gesamtNeu = 0;
+    for (const [kat, katUrl] of Object.entries(KATEGORIEN_URL)) {
+      console.log(`  Kategorie: ${kat} → ${katUrl}`);
       try {
-        const { items, paginationMap } = await scrapeNewsSeite(page, nextUrl);
+        const items = await scrapeNewsKategorie(page, kat, katUrl);
         const neu = await speichereNewsInDB(items);
         gesamtNeu += neu;
         const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
         newsCache = [...neuItems, ...newsCache];
-        nextUrl = null;
-        const avail = Object.keys(paginationMap).map(Number).sort((a, b) => a - b);
-        for (const n of avail) {
-          if (n > p) { nextUrl = paginationMap[n]; p = n; break; }
-        }
+        console.log(`    ✓ ${items.length} gefunden, ${neu} neu`);
       } catch(e) {
-        console.error(`  [Löwen] Fehler Seite ${p}:`, e.message);
-        break;
+        console.error(`  [FEHLER] ${kat}:`, e.message);
       }
       await new Promise(r => setTimeout(r, 1000));
     }
     await page.close(); await b.close();
     lastUpdated = new Date().toISOString();
-    console.log(`[OK] Löwen Vollscan abgeschlossen: ${gesamtNeu} neue Artikel.`);
+    console.log(`[OK] Löwen Vollscan: ${gesamtNeu} neue Artikel.`);
   } catch(err) {
     console.error('[FEHLER] Löwen Vollscan:', err.message);
     if (b) try { await b.close(); } catch(_) {}
   }
 }
 
-// Seite-1-Update: läuft alle 5 Min via Cron
 async function scrapeNewsUpdate() {
-  // Beim ersten Start: Vollscan wenn DB leer
   if (!DB_AKTIV && newsCache.length === 0) {
-    console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten) — DB leer beim ersten Start...`);
     await scrapeNewsVollscanInternal();
   } else if (DB_AKTIV) {
     const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
     if (parseInt(count.rows[0].count) === 0) {
-      console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (bis 30 Seiten) — DB leer beim ersten Start...`);
       await scrapeNewsVollscanInternal();
       return;
     }
-    console.log(`[${new Date().toISOString()}] Löwen News: Seite-1-Update...`);
-  } else {
-    console.log(`[${new Date().toISOString()}] Löwen News: Seite-1-Update...`);
   }
+  console.log(`[${new Date().toISOString()}] Löwen News: Update (Seite 1)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    const { items } = await scrapeNewsSeite(page, NEWS_URL);
+    const items = await scrapeNewsKategorie(page, 'Allgemein', NEWS_URL);
     await page.close(); await b.close();
     const neu = await speichereNewsInDB(items);
     if (neu > 0) {

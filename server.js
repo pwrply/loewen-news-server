@@ -211,43 +211,49 @@ const parseDate = d => {
 
 async function scrapeNewsKategorie(page, kategorie, url) {
   const items = [];
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-  await new Promise(r => setTimeout(r, 800));
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await new Promise(r => setTimeout(r, 1500));
   const html = await page.content();
   const $ = cheerio.load(html);
 
-  // Textinhalte sammeln: Datum + Titel treten in Reihenfolge auf
-  const textContent = $('body').text().trim();
-  const lines = textContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  
-  for (let i = 0; i < lines.length - 1; i++) {
-    const line = lines[i];
-    const datumMatch = line.match(/^(\d{2}\.\d{2}\.\d{4})$/);
-    if (!datumMatch) continue;
-    
-    const datum = datumMatch[1];
-    const titel = lines[i + 1];
-    
-    // Überspringen wenn es eine Kategorie-Navigation ist
-    if (titel.includes('Vorschau') || titel.includes('Spielberichte') || 
-        titel.includes('Team') || titel.includes('Fans') || 
-        titel === '1' || titel === '2' || titel === 'nVchste') continue;
-    
-    // URL generieren (URL muss eindeutig sein)
-    const slug = titel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
-    const fullUrl = `${BASE_URL}/saison/aktuelles/details/${slug}`;
-    
+  // Alle Links die auf /saison/aktuelles/details/ zeigen
+  $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+    const href = $(el).attr('href') || '';
+    if (!href.includes('/saison/aktuelles/') || href === '/saison/aktuelles') return;
+    // Nur Detail-Links, keine Kategorie-Links
+    const skipPaths = ['/vorschau', '/spielberichte', '/team', '/fans', '/aktuelles'];
+    if (skipPaths.some(p => href.endsWith(p) || href === '/saison/aktuelles' + p)) return;
+
+    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+    if (items.find(x => x.url === fullUrl)) return; // Duplikat
+
+    // Titel aus Link-Text oder Kind-Elementen holen
+    let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim();
+    if (!titel) titel = $(el).clone().children().remove().end().text().trim();
+    if (!titel) titel = $(el).text().trim();
+    titel = titel.replace(/\s+/g, ' ').trim();
+    if (titel.length < 8) return;
+
+    // Datum aus Link oder Eltern-Container
+    let datum = '';
+    const container = $(el).closest('article, li, div');
+    const containerText = container.text();
+    const datumMatch = containerText.match(/(\d{2}\.\d{2}\.\d{4})/);
+    if (datumMatch) datum = datumMatch[1];
+
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),
       titel:     titel,
       url:       fullUrl,
       datum:     datum,
       kategorie: kategorie,
-      quelle:    'LN7 Frankfurt',
+      quelle:    'L\u00f6wen Frankfurt',
       quelletyp: 'loewen',
       bildUrl:   ''
     });
-  }
+  });
+
+  console.log(`    [${kategorie}] ${items.length} Artikel auf ${url}`);
   return items;
 }
 

@@ -301,10 +301,16 @@ async function scrapeNewsAll(page) {
 
     // Kategorie automatisch aus URL oder Titel bestimmen
     let kategorie = 'Allgemein';
-    if (fullUrl.includes('/vorschau') || titel.toLowerCase().includes('vorschau')) kategorie = 'Vorschau';
-    else if (fullUrl.includes('/spielberichte') || titel.toLowerCase().includes('sieg') || titel.toLowerCase().includes('streif')) kategorie = 'Spielberichte';
-    else if (fullUrl.includes('/team') || titel.toLowerCase().includes('transfer') || titel.toLowerCase().includes('vertrag')) kategorie = 'Team';
-    else if (fullUrl.includes('/fans') || titel.toLowerCase().includes('fan') || titel.toLowerCase().includes('ticket')) kategorie = 'Fans';
+    const titelLower = titel.toLowerCase();
+    
+    // Vorschau:明确的关键词
+    if (fullUrl.includes('/vorschau') || titelLower.includes('vorschau') || titelLower.includes('bevor')) kategorie = 'Vorschau';
+    // Spielberichte: klare Spiel-Referenzen
+    else if (fullUrl.includes('/spielberichte') || titelLower.includes('sieg') || titelLower.includes('streif') || titelLower.includes('spiel') || titelLower.includes('niederlage')) kategorie = 'Spielberichte';
+    // Team: ALLE Spieler/Team-bezogenen Keywords
+    else if (fullUrl.includes('/team') || titelLower.includes('transfer') || titelLower.includes('vertrag') || titelLower.includes('spieler') || titelLower.includes('kader') || titelLower.includes('team') || titelLower.includes('spieler') || titelLower.includes('lee') || titelLower.includes('gesch') || titelLower.includes('vorstellen') || titelLower.includes('profil')) kategorie = 'Team';
+    // Fans: klare Fan-Referenzen
+    else if (fullUrl.includes('/fans') || titelLower.includes('fan') || titelLower.includes('ticket') || titelLower.includes('merch') || titelLower.includes('shop')) kategorie = 'Fans';
 
     items.push({
       id:        Buffer.from(fullUrl).toString('base64').slice(-32),

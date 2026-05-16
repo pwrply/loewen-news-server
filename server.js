@@ -388,7 +388,8 @@ async function scrapeArtikelDetail(url) {
 
 app.get('/api/news', (req, res) => {
   const sorted = [...newsCache].sort((a, b) => parseDate(b.datum) - parseDate(a.datum));
-  res.json({ artikel: sorted, lastUpdated, count: sorted.length });
+  // "items" UND "artikel" — beide Keys für Kompatibilität mit der App
+  res.json({ items: sorted, artikel: sorted, lastUpdated, count: sorted.length });
 });
 
 app.get('/api/article', async (req, res) => {

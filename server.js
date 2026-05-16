@@ -471,6 +471,29 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
+// Debug: zeigt alle Links auf einer Kategorie-Seite
+app.get('/api/admin/debug-links', async (req, res) => {
+  const url = req.query.url || 'https://www.loewen-frankfurt.de/saison/aktuelles/team';
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 1500));
+    const links = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a[href]'))
+        .map(a => a.href)
+        .filter(h => h.includes('loewen-frankfurt') || h.includes('aktuelles') || h.includes('page') || h.includes('Page') || h.includes('tx_news'));
+    });
+    await page.close(); await b.close();
+    res.json({ url, count: links.length, links: [...new Set(links)] });
+  } catch(err) {
+    if (b) try { await b.close(); } catch(_) {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/admin/reset', async (req, res) => {
   try {
     await leereDatenbank();

@@ -260,20 +260,20 @@ async function scrapeNewsKategorie(page, kategorie, url) {
 
 async function scrapeNewsKategorieAlle(page, kategorie, basisUrl) {
   let alleItems = [];
-  let seite = 0;
   const MAX_SEITEN = 20;
-  while (seite < MAX_SEITEN) {
-    const url = seite === 0 ? basisUrl : `${basisUrl}?tx_news_pi1%5Bpage%5D=${seite}`;
-    console.log(`    Seite ${seite + 1}: ${url}`);
+  for (let seite = 0; seite < MAX_SEITEN; seite++) {
+    const url = seite === 0
+      ? basisUrl
+      : `${basisUrl}?tx_news_pi1%5BcurrentPage%5D=${seite}`;
+    console.log(`    [${kategorie}] Seite ${seite + 1}: ${url}`);
     const items = await scrapeNewsKategorie(page, kategorie, url);
-    if (items.length === 0) break;
-    // Prüfe ob neue URLs dabei sind (Abbruch wenn alles Duplikate)
+    if (items.length === 0) { console.log(`    [${kategorie}] Keine Artikel mehr — Stop.`); break; }
     const echteNeu = items.filter(x => !alleItems.find(a => a.url === x.url));
-    if (echteNeu.length === 0) break;
+    if (echteNeu.length === 0) { console.log(`    [${kategorie}] Nur Duplikate — Stop.`); break; }
     alleItems = [...alleItems, ...echteNeu];
-    seite++;
     await new Promise(r => setTimeout(r, 800));
   }
+  console.log(`    [${kategorie}] Gesamt: ${alleItems.length} Artikel`);
   return alleItems;
 }
 

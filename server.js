@@ -1,7 +1,6 @@
 const express    = require('express');
 const cheerio    = require('cheerio');
 const puppeteer  = require('puppeteer-core');
-const cron       = require('node-cron');
 const cors       = require('cors');
 const { Pool }   = require('pg');
 
@@ -13,7 +12,7 @@ app.use(express.json());
 
 // ─────────────────────────────────────────────
 // MARK: - Datenbank
-// ─────────────────────────────────────────────
+// ──────���──────────────────────────────────────
 
 const DB_AKTIV = !!process.env.DATABASE_URL;
 
@@ -30,9 +29,7 @@ async function initDB() {
       titel       TEXT NOT NULL,
       url         TEXT NOT NULL UNIQUE,
       datum       TEXT,
-      kategorie   TEXT,
       quelle      TEXT,
-      quelletyp   TEXT,
       bild_url    TEXT,
       erstellt_am TIMESTAMPTZ DEFAULT NOW()
     );
@@ -51,7 +48,6 @@ async function initDB() {
       aktualisiert_am       TIMESTAMPTZ DEFAULT NOW()
     );
   `);
-  await pool.query(`ALTER TABLE news ADD COLUMN IF NOT EXISTS bild_url TEXT;`).catch(() => {});
   console.log('[DB] Tabellen bereit.');
 }
 
@@ -66,14 +62,12 @@ async function ladeNewsAusDB() {
   if (!DB_AKTIV) return;
   const result = await pool.query('SELECT * FROM news ORDER BY erstellt_am DESC LIMIT 1000');
   newsCache = result.rows.map(r => ({
-    id:        r.id,
-    titel:     r.titel,
-    url:       r.url,
-    datum:     r.datum,
-    kategorie: r.kategorie,
-    quelle:    r.quelle,
-    quelletyp: r.quelletyp,
-    bildUrl:   r.bild_url || ''
+    id:      r.id,
+    titel:   r.titel,
+    url:     r.url,
+    datum:   r.datum,
+    quelle:  r.quelle,
+    bildUrl: r.bild_url || ''
   }));
   console.log(`[DB] ${newsCache.length} Löwen Artikel geladen.`);
 }
@@ -96,7 +90,7 @@ async function ladeTabelleAusDB() {
       istEigenesMannschaft: r.ist_eigene_mannschaft
     }));
     tabelleLastUpdated = result.rows[0]?.aktualisiert_am?.toISOString() || null;
-    console.log(`[DB] ${tabelleCache.length} Tabelleneinträge geladen.`);
+    console.log(`[DB] ${tabelleCache.length} Tabelleneinträ°¡ge geladen.`);
   }
 }
 
@@ -105,13 +99,13 @@ async function speichereNewsInDB(items) {
   let neu = 0;
   for (const item of items) {
     try {
-      const r = await pool.query(
-        `INSERT INTO news (id, titel, url, datum, kategorie, quelle, quelletyp, bild_url)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         ON CONFLICT (url) DO UPDATE SET bild_url = EXCLUDED.bild_url`,
-        [item.id, item.titel, item.url, item.datum, item.kategorie, item.quelle, item.quelletyp, item.bildUrl || '']
+      await pool.query(
+        `INSERT INTO news (id, titel, url, datum, quelle, bild_url)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (url) DO NOTHING`,
+        [item.id, item.titel, item.url, item.datum, item.quelle, item.bildUrl || '']
       );
-      if (r.rowCount > 0) neu++;
+      neu++;
     } catch (_) {}
   }
   return neu;
@@ -150,6 +144,7 @@ let tabelleCache       = [];
 let lastUpdated        = null;
 let tabelleLastUpdated = null;
 let dbBereit           = false;
+let letzterNewsCount   = 0;
 
 // ─────────────────────────────────────────────
 // MARK: - Hilfsfunktionen
@@ -157,38 +152,12 @@ let dbBereit           = false;
 
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
-const KATEGORIEN_URL = {
-  'Vorschau':      `${BASE_URL}/saison/aktuelles/vorschau`,
-  'Spielberichte': `${BASE_URL}/saison/aktuelles/spielberichte`,
-  'Team':          `${BASE_URL}/saison/aktuelles/team`,
-  'Fans':          `${BASE_URL}/saison/aktuelles/fans`
-};
 
-function kategorisiere(titel, katTag) {
-  // 1. Priorität: Kategorie direkt von der Website (z.B. aus dem Tag-Element)
-  if (katTag) {
-    const k = katTag.trim().toLowerCase();
-    if (k === 'team')          return 'Team';
-    if (k === 'spielberichte') return 'Spielberichte';
-    if (k === 'vorschau')      return 'Vorschau';
-    if (k === 'fans')          return 'Fans';
-  }
-  // 2. Fallback: Titelbasierte Erkennung
-  const t = titel.toLowerCase();
-  if (t.includes('vorschau') || t.includes('heimspiel') || t.includes('auswärts')) return 'Vorschau';
-  if (t.includes('sieg') || t.includes('niederlage') || t.includes('tore') ||
-      t.includes('gewinnt') || t.includes('verliert') || t.includes('siegt') ||
-      t.includes('0:') || t.includes('1:') || t.includes('2:') || t.includes('3:') ||
-      t.includes('4:') || t.includes('5:') || t.includes('6:') || t.includes('7:')) return 'Spielberichte';
-  if (t.includes('transfer') || t.includes('verpflicht') || t.includes('neuzugang') ||
-      t.includes('verlängert') || t.includes('vertrag') || t.includes('löwe') ||
-      t.includes('wechselt') || t.includes('wird ein') || t.includes('kehrt zurück') ||
-      t.includes('unterschreibt') || t.includes('kapitän') || t.includes('coach') ||
-      t.includes('trainer')) return 'Team';
-  if (t.includes('fan') || t.includes('dauerkar') || t.includes('ticket') ||
-      t.includes('merchandise') || t.includes('shop') || t.includes('gewinnspiel')) return 'Fans';
-  return 'Team';
-}
+const parseDate = d => {
+  if (!d) return 0;
+  const [day, month, year] = d.split('.');
+  return new Date(`${year}-${month}-${day}`).getTime() || 0;
+};
 
 async function getBrowser() {
   return await puppeteer.launch({
@@ -199,210 +168,116 @@ async function getBrowser() {
   });
 }
 
-const parseDate = d => {
-  if (!d) return 0;
-  const [day, month, year] = d.split('.');
-  return new Date(`${year}-${month}-${day}`).getTime() || 0;
-};
-
 // ─────────────────────────────────────────────
-// MARK: - Löwen News Scraper
+// MARK: - News Scraper (nur Hauptseite, keine Kategorien)
 // ─────────────────────────────────────────────
 
-async function scrapeNewsKategorie(page, kategorie, url) {
-  const items = [];
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  await new Promise(r => setTimeout(r, 1500));
-  const html = await page.content();
-  const $ = cheerio.load(html);
-
-  // Alle Links die auf Artikel-Detail-Seiten zeigen
-  $('a[href]').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    if (!href.includes('/saison/aktuelles/')) return;
-    // Nur echte Artikel-Links — Kategorie-Navigations-Links überspringen
-    const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
-    const normHref = href.replace(/\/$/, '');
-    if (katPfade.includes(normHref)) return;
-
-    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-    if (items.find(x => x.url === fullUrl)) return; // Duplikat
-
-    // Titel aus Link-Text oder Kind-Elementen holen
-    let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim();
-    if (!titel) titel = $(el).clone().children().remove().end().text().trim();
-    if (!titel) titel = $(el).text().trim();
-    titel = titel.replace(/\s+/g, ' ').trim();
-    if (titel.length < 8) return;
-
-    // Datum aus Link oder Eltern-Container
-    let datum = '';
-    const container = $(el).closest('article, li, div');
-    const containerText = container.text();
-    const datumMatch = containerText.match(/(\d{2}\.\d{2}\.\d{4})/);
-    if (datumMatch) datum = datumMatch[1];
-
-    items.push({
-      id:        Buffer.from(fullUrl).toString('base64').slice(-32),
-      titel:     titel,
-      url:       fullUrl,
-      datum:     datum,
-      kategorie: kategorie,
-      quelle:    'L\u00f6wen Frankfurt',
-      quelletyp: 'loewen',
-      bildUrl:   ''
-    });
-  });
-
-  console.log(`    [${kategorie}] ${items.length} Artikel auf ${url}`);
-  return items;
-}
-
-async function scrapeNewsKategorieAlle(page, kategorie, basisUrl) {
-  // Nur Hauptseite scrapen (keine Pagination)
-  console.log(`    [${kategorie}] ${basisUrl}`);
-  return await scrapeNewsKategorie(page, kategorie, basisUrl);
-}
-
-async function scrapeNewsAll(page) {
-  const url = 'https://www.loewen-frankfurt.de/saison/aktuelles';
-  console.log(`    [alle] Hauptseite: ${url}`);
+async function scrapeNews(page) {
+  const url = NEWS_URL;
+  console.log(`    [news] ${url}`);
   const items = [];
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await new Promise(r => setTimeout(r, 2000));
   const html = await page.content();
   const $ = cheerio.load(html);
 
-  // Alle Artikel-Links von der Hauptseite holen
   $('a[href*="/saison/aktuelles/"]').each((i, el) => {
     const href = $(el).attr('href') || '';
-    // Nur echte Artikel-Links — keine Kategorie-Navigations-Links
     const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
     const normHref = href.replace(/\/$/, '');
     if (katPfade.includes(normHref)) return;
     if (!href.includes('/saison/aktuelles/')) return;
 
     const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-    if (items.find(x => x.url === fullUrl)) return; // Duplikat
+    if (items.find(x => x.url === fullUrl)) return;
 
-    // Titel aus Link oder Kind-Elementen
     let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim();
     if (!titel) titel = $(el).clone().children().remove().end().text().trim();
     if (!titel) titel = $(el).text().trim();
     titel = titel.replace(/\s+/g, ' ').trim();
     if (titel.length < 8) return;
 
-    // Datum aus Container
     let datum = '';
     const container = $(el).closest('article, li, div');
-    const containerText = container.text();
-    const datumMatch = containerText.match(/(\d{2}\.\d{2}\.\d{4})/);
+    const datumMatch = container.text().match(/(\d{2}\.\d{2}\.\d{4})/);
     if (datumMatch) datum = datumMatch[1];
 
-    // Kategorie automatisch aus URL oder Titel bestimmen
-    let kategorie = 'Allgemein';
-    const titelLower = titel.toLowerCase();
-    
-    // Vorschau: klare Keywords
-    if (fullUrl.includes('/vorschau') || titelLower.includes('vorschau') || titelLower.includes('bevor')) kategorie = 'Vorschau';
-    // Spielberichte: klare Spiel-Referenzen
-    else if (fullUrl.includes('/spielberichte') || titelLower.includes('sieg') || titelLower.includes('streif') || titelLower.includes('spiel') || titelLower.includes('niederlage')) kategorie = 'Spielberichte';
-    // Team: ALLE Spieler/Team-bezogenen Keywords
-    else if (fullUrl.includes('/team') || titelLower.includes('transfer') || titelLower.includes('vertrag') || titelLower.includes('spieler') || titelLower.includes('kader') || titelLower.includes('team') || titelLower.includes('lee') || titelLower.includes('gesch') || titelLower.includes('vorstellen') || titelLower.includes('profil')) kategorie = 'Team';
-    // Fans: klare Fan-Referenzen
-    else if (fullUrl.includes('/fans') || titelLower.includes('fan') || titelLower.includes('ticket') || titelLower.includes('merch') || titelLower.includes('shop')) kategorie = 'Fans';
-
     items.push({
-      id:        Buffer.from(fullUrl).toString('base64').slice(-32),
-      titel:     titel,
-      url:       fullUrl,
-      datum:     datum,
-      kategorie: kategorie,
-      quelle:    'Löwen Frankfurt',
-      quelletyp: 'loewen',
-      bildUrl:   ''
+      id:      Buffer.from(fullUrl).toString('base64').slice(-32),
+      titel:   titel,
+      url:     fullUrl,
+      datum:   datum,
+      quelle:  'Lö¨ııwen Frankfurt',
+      bildUrl: ''
     });
   });
 
-  console.log(`    [alle] ${items.length} Artikel gefunden`);
+  console.log(`    [news] ${items.length} Artikel gefunden`);
   return items;
 }
 
-async function scrapeNewsVollscanInternal() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (Hauptseite - alle Artikel)...`);
+async function scrapeNewsVollscan() {
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    const items = await scrapeNewsAll(page);
-    const neu = await speichereNewsInDB(items);
-    const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
-    newsCache = [...neuItems, ...newsCache];
-    await page.close(); await b.close();
+    const items = await scrapeNews(page);
+    
+    // Neue Artikel erkennen für Push-Notification
+    const neueArtikel = items.filter(item => !newsCache.find(c => c.url === item.url));
+    
+    await speichereNewsInDB(items);
+    newsCache = items;
     lastUpdated = new Date().toISOString();
-    console.log(`[OK] Löwen Vollscan: ${neu} neue Artikel.`);
-  } catch(err) {
-    console.error('[FEHLER] Löwen Vollscan:', err.message);
-    if (b) try { await b.close(); } catch(_) {}
-  }
-}
-
-async function scrapeNewsUpdate() {
-  if (!DB_AKTIV && newsCache.length === 0) {
-    await scrapeNewsVollscanInternal();
-  } else if (DB_AKTIV) {
-    const count = await pool.query("SELECT COUNT(*) FROM news WHERE quelletyp='loewen'");
-    if (parseInt(count.rows[0].count) === 0) {
-      await scrapeNewsVollscanInternal();
-      return;
+    
+    // Push-Notification bei neuen Artikeln
+    if (neueArtikel.length > 0) {
+      console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`);
+      neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
     }
-  }
-  // Update: Hauptseite prüfen
-  console.log(`[${new Date().toISOString()}] Löwen News: Update (Hauptseite)...`);
-  let b;
-  try {
-    b = await getBrowser();
-    const page = await b.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    const items = await scrapeNewsAll(page);
-    const neu = await speichereNewsInDB(items);
-    const neuItems = items.filter(x => !newsCache.find(c => c.url === x.url));
-    newsCache = [...neuItems, ...newsCache];
-    await page.close(); await b.close();
-    if (neu > 0) lastUpdated = new Date().toISOString();
-    console.log(`[OK] Löwen Update: ${neu} neue Artikel.`);
+    
+    await page.close();
+    await b.close();
+    
+    letzterNewsCount = items.length;
+    console.log(`[OK] Löwen News: ${items.length} Artikel.`);
   } catch(err) {
-    console.error('[FEHLER] Löwen Update:', err.message);
+    console.error('[FEHLER] Löwen News:', err.message);
     if (b) try { await b.close(); } catch(_) {}
   }
 }
 
 // ─────────────────────────────────────────────
-// MARK: - Tabellen-Scraper
+// MARK: - DEL Tabelle Scraper
 // ─────────────────────────────────────────────
 
 async function scrapeTabelle() {
-  console.log(`[${new Date().toISOString()}] Scraping DEL Tabelle...`);
+  console.log(`[${new Date().toISOString()}] DEL Tabelle: Scraping...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto('https://www.penny-del.org/tabelle/', { waitUntil: 'networkidle2', timeout: 30000 });
-    await new Promise(r => setTimeout(r, 3000));
+    await page.goto('https://www.eisbaerlin.de/del-tabelle', { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 1500));
+    
     const $ = cheerio.load(await page.content());
     const eintraege = [];
-    $('table tbody tr, .standings tbody tr, .table-wrapper tbody tr').each((i, row) => {
-      const cells = $(row).find('td');
-      if (cells.length < 6) return;
-      const getText = idx => $(cells[idx]).text().trim().replace(/[\n\r\t]+/g, ' ');
-      const toInt   = v  => parseInt(v.replace(/[^\d-]/g, '')) || 0;
+    
+    $('table tbody tr').each((i, tr) => {
+      const cells = $(tr).find('td').toArray();
+      if (cells.length < 8) return;
+      
+      const getText = idx => $(cells[idx]).text().trim();
+      const toInt = v => parseInt(v.replace(/[^\d-]/g, '')) || 0;
       const rang    = i + 1;
       const team    = getText(1) || getText(0);
       const punkte  = toInt(getText(cells.length - 1));
       const spiele  = toInt(getText(2));
       if (!team || team.length < 2) return;
+      
       eintraege.push({
         rang,
         team:                team,
@@ -414,53 +289,22 @@ async function scrapeTabelle() {
         torePlus:            0,
         toreMinus:           0,
         punkte:              punkte,
-        istEigenesMannschaft: team.toLowerCase().includes('löwen frankfurt')
+        istEigenesMannschaft: team.toLowerCase().includes('lö¨ııwen frankfurt')
       });
     });
-    await page.close(); await b.close();
+    
+    await page.close();
+    await b.close();
+    
     if (eintraege.length >= 8) {
       tabelleCache = eintraege;
       tabelleLastUpdated = new Date().toISOString();
       await speichereTabelleInDB(eintraege);
-      console.log(`[OK] Tabelle: ${eintraege.length} Teams gespeichert.`);
-    } else {
-      console.log(`[WARN] Tabelle: Nur ${eintraege.length} Teams gefunden — verwerfe Ergebnis.`);
+      console.log(`[OK] Tabelle: ${eintraege.length} Teams.`);
     }
   } catch(err) {
     console.error('[FEHLER] Tabelle:', err.message);
     if (b) try { await b.close(); } catch(_) {}
-  }
-}
-
-// ─────────────────────────────────────────────
-// MARK: - Artikel-Detail Scraper
-// ─────────────────────────────────────────────
-
-async function scrapeArtikelDetail(url) {
-  let b;
-  try {
-    b = await getBrowser();
-    const page = await b.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await new Promise(r => setTimeout(r, 800));
-    const $ = cheerio.load(await page.content());
-    let bildUrl = '';
-    const ogImage = $('meta[property="og:image"]').attr('content');
-    if (ogImage) bildUrl = ogImage;
-    else {
-      const img = $('article img, .news-detail img, .content img').first();
-      if (img.length) bildUrl = img.attr('src') || img.attr('data-src') || '';
-    }
-    let inhalt = '';
-    const artikelEl = $('article .field--type-text-with-summary, article .field--name-body, .news-text, .article-body').first();
-    if (artikelEl.length) inhalt = artikelEl.text().trim().replace(/\s+/g, ' ');
-    await page.close(); await b.close();
-    return { bildUrl, inhalt };
-  } catch(err) {
-    console.error('[FEHLER] Artikel-Detail:', err.message);
-    if (b) try { await b.close(); } catch(_) {}
-    return { bildUrl: '', inhalt: '' };
   }
 }
 
@@ -470,19 +314,12 @@ async function scrapeArtikelDetail(url) {
 
 app.get('/api/news', (req, res) => {
   const sorted = [...newsCache].sort((a, b) => parseDate(b.datum) - parseDate(a.datum));
-  // "items" UND "artikel" — beide Keys für Kompatibilität mit der App
-  res.json({ items: sorted, artikel: sorted, lastUpdated, count: sorted.length });
-});
-
-app.get('/api/article', async (req, res) => {
-  const { url } = req.query;
-  if (!url) return res.status(400).json({ error: 'url fehlt' });
-  try {
-    const detail = await scrapeArtikelDetail(url);
-    res.json(detail);
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
+  res.json({ 
+    items: sorted, 
+    artikel: sorted, 
+    lastUpdated, 
+    count: sorted.length 
+  });
 });
 
 app.get('/api/tabelle', (req, res) => {
@@ -493,7 +330,7 @@ app.get('/api/status', (req, res) => {
   res.json({
     dbAktiv:       DB_AKTIV,
     dbBereit,
-    loewen:        { count: newsCache.length,   lastUpdated },
+    loewen:        { count: newsCache.length, lastUpdated },
     tabelle:       { count: tabelleCache.length, lastUpdated: tabelleLastUpdated }
   });
 });
@@ -502,37 +339,16 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
-// Debug: zeigt alle Links auf einer Kategorie-Seite
-app.get('/api/admin/debug-links', async (req, res) => {
-  const url = req.query.url || 'https://www.loewen-frankfurt.de/saison/aktuelles/team';
-  let b;
-  try {
-    b = await getBrowser();
-    const page = await b.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 1500));
-    const links = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('a[href]'))
-        .map(a => a.href)
-        .filter(h => h.includes('loewen-frankfurt') || h.includes('aktuelles') || h.includes('page') || h.includes('Page') || h.includes('tx_news'));
-    });
-    await page.close(); await b.close();
-    res.json({ url, count: links.length, links: [...new Set(links)] });
-  } catch(err) {
-    if (b) try { await b.close(); } catch(_) {}
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.post('/api/admin/reset', async (req, res) => {
   try {
     await leereDatenbank();
     newsCache = [];
     tabelleCache = [];
     lastUpdated = null;
-    res.json({ ok: true, message: 'DB geleert. Vollscan startet im Hintergrund...' });
-    scrapeNewsUpdate();
+    letzterNewsCount = 0;
+    res.json({ ok: true, message: 'DB geleert. Vollscan startet...' });
+    scrapeNewsVollscan();
+    scrapeTabelle();
   } catch(err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -540,42 +356,32 @@ app.post('/api/admin/reset', async (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    name:    'Löwen Frankfurt News API',
-    version: '7.0.0',
-    routes:  ['/api/news', '/api/article?url=...', '/api/tabelle', '/api/status', '/api/health']
+    name:    'Lö¨ııwen Frankfurt News API',
+    version: '8.0.0',
+    routes:  ['/api/news', '/api/tabelle', '/api/status', '/api/health']
   });
 });
 
 // ─────────────────────────────────────────────
-// MARK: - Cron Jobs
+// MARK: - Start
 // ─────────────────────────────────────────────
 
-cron.schedule('*/5 * * * *',  scrapeNewsUpdate);  // Löwen Seite 1 alle 5 Min
-cron.schedule('*/15 * * * *', scrapeTabelle);     // Tabelle alle 15 Min
+async function startServer() {
+  await initDB();
+  await ladeNewsAusDB();
+  await ladeTabelleAusDB();
+  dbBereit = true;
+  
+  console.log('[START] Server läuft auf Port 8080');
+  console.log('[START] DB bereit — starte Scraper...');
+  
+  scrapeNewsVollscan();
+  scrapeTabelle();
+}
 
-// ─────────────────────────────────────────────
-// MARK: - Startup
-// ─────────────────────────────────────────────
+startServer();
 
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, async () => {
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
   console.log(`[START] Server läuft auf Port ${PORT}`);
-  try {
-    await initDB();
-    await ladeNewsAusDB();
-    await ladeTabelleAusDB();
-    dbBereit = true;
-    console.log('[START] DB bereit — starte Scraper...');
-  } catch(e) {
-    console.error('[FEHLER] DB-Init:', e.message);
-    dbBereit = true;
-  }
-  setTimeout(() => scrapeNewsUpdate(), 5000);   // Löwen: nach 5 Sek (Vollscan bei DB leer, sonst Seite-1)
-  setTimeout(() => scrapeTabelle(),      30000);  // Tabelle: nach 30 Sek
-
-  // Cron: Löwen Update alle 5 Minuten
-  cron.schedule('*/5 * * * *', async () => {
-    if (dbBereit) await scrapeNewsUpdate();
-  });
 });

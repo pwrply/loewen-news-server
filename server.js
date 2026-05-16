@@ -157,6 +157,12 @@ let dbBereit           = false;
 
 const BASE_URL = 'https://www.loewen-frankfurt.de';
 const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
+const KATEGORIEN_URL = {
+  'Vorschau':      `${BASE_URL}/saison/aktuelles/vorschau`,
+  'Spielberichte': `${BASE_URL}/saison/aktuelles/spielberichte`,
+  'Team':          `${BASE_URL}/saison/aktuelles/team`,
+  'Fans':          `${BASE_URL}/saison/aktuelles/fans`
+};
 
 function kategorisiere(titel, katTag) {
   // 1. Priorität: Kategorie direkt von der Website (z.B. aus dem Tag-Element)
@@ -203,7 +209,47 @@ const parseDate = d => {
 // MARK: - Löwen News Scraper
 // ─────────────────────────────────────────────
 
-async function scrapeNewsSeite(page, url) {
+async function scrapeNewsKategorie(page, kategorie, url) {
+  const items = [];
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await new Promise(r => setTimeout(r, 800));
+  const html = await page.content();
+  const $ = cheerio.load(html);
+
+  // Textinhalte sammeln: Datum + Titel treten in Reihenfolge auf
+  const textContent = $('body').text().trim();
+  const lines = textContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = lines[i];
+    const datumMatch = line.match(/^(\d{2}\.\d{2}\.\d{4})$/);
+    if (!datumMatch) continue;
+    
+    const datum = datumMatch[1];
+    const titel = lines[i + 1];
+    
+    // Überspringen wenn es eine Kategorie-Navigation ist
+    if (titel.includes('Vorschau') || titel.includes('Spielberichte') || 
+        titel.includes('Team') || titel.includes('Fans') || 
+        titel === '1' || titel === '2' || titel === 'nVchste') continue;
+    
+    // URL generieren (URL muss eindeutig sein)
+    const slug = titel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+    const fullUrl = `${BASE_URL}/saison/aktuelles/details/${slug}`;
+    
+    items.push({
+      id:        Buffer.from(fullUrl).toString('base64').slice(-32),
+      titel:     titel,
+      url:       fullUrl,
+      datum:     datum,
+      kategorie: kategorie,
+      quelle:    'LN7 Frankfurt',
+      quelletyp: 'loewen',
+      bildUrl:   ''
+    });
+  }
+  return items;
+}
   const items = [];
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
   await new Promise(r => setTimeout(r, 800));

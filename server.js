@@ -217,13 +217,90 @@ async function scrapeNews(page) {
 }
 
 async function scrapeNewsVollscan() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan...`);
+  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (alle Seiten)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    const items = await scrapeNews(page);
+    
+    // Alle Seiten scrapen
+    let allItems = []
+    let currentPage = 1
+    const maxPages = 10
+    
+    while (currentPage <= maxPages) {
+      const url = `${NEWS_URL}?page=${currentPage}`
+      console.log(`    [news] Seite ${currentPage}: ${url}`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await new Promise(r => setTimeout(r, 2000));
+      
+      const $ = cheerio.load(await page.content())
+      const pageItems = []
+      
+      $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+        const href = $(el).attr('href') || ''
+        const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans']
+        const normHref = href.replace(/\/$/, '')
+        if (katPfade.includes(normHref)) return
+        if (!href.includes('/saison/aktuelles/')) return
+        
+        const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`
+        if (pageItems.find(x => x.url === fullUrl)) return
+        
+        let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim()
+        if (!titel) titel = $(el).clone().children().remove().end().text().trim()
+        if (!titel) titel = $(el).text().trim()
+        titel = titel.replace(/\s+/g, ' ').trim()
+        if (titel.length < 8) return
+        
+        let datum = ''
+        const container = $(el).closest('article, li, div')
+        const datumMatch = container.text().match(/(\d{2}\.\d{2}\.\d{4})/)
+        if (datumMatch) datum = datumMatch[1]
+        
+        pageItems.push({
+          id: Buffer.from(fullUrl).toString('base64').slice(-32),
+          titel,
+          url: fullUrl,
+          datum,
+          quelle: '',
+          bildUrl: ''
+        })
+      })
+      
+      console.log(`    [news] Seite ${currentPage}: ${pageItems.length} Artikel`);
+      allItems = allItems.concat(pageItems)
+      
+      // Wenn weniger als 20 Artikel, keine weitere Seite
+      if (pageItems.length < 20) break
+      
+      currentPage++
+    }
+    
+    // Neue Artikel erkennen für Push-Notification
+    const neueArtikel = allItems.filter(item => !newsCache.find(c => c.url === item.url))
+    
+    await speichereNewsInDB(allItems)
+    newsCache = allItems
+    lastUpdated = new Date().toISOString()
+    
+    // Push-Notification bei neuen Artikeln
+    if (neueArtikel.length > 0) {
+      console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`)
+      neueArtikel.forEach(n => console.log(`  - ${n.titel}`))
+    }
+    
+    await page.close()
+    await b.close()
+    
+    letzterNewsCount = allItems.length
+    console.log(`[OK] Löwen News: ${allItems.length} Artikel aus ${currentPage} Seiten.`)
+  } catch(err) {
+    console.error('[FEHLER] Löwen News:', err.message)
+    if (b) try { await b.close(); } catch(_) {}
+  }
+}
     
     // Neue Artikel erkennen für Push-Notification
     const neueArtikel = items.filter(item => !newsCache.find(c => c.url === item.url));

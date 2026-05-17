@@ -207,7 +207,7 @@ async function scrapeNews(page) {
       titel:   titel,
       url:     fullUrl,
       datum:   datum,
-      quelle:  'Lö¨ııwen Frankfurt',
+      quelle:  '',
       bildUrl: ''
     });
   });

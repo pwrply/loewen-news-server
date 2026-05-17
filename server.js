@@ -179,6 +179,7 @@ async function scrapeNewsVollscan() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
 
     let allItems = [];
+    const maxSeiten = 20;
     await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await new Promise(r => setTimeout(r, 2000));
 

@@ -351,58 +351,116 @@ async function scrapeNewsSchnell() {
 }
 
 // ─────────────────────────────────────────────
-// MARK: - Tabelle Scraper
+// MARK: - Tabelle via SofaScore
 // ─────────────────────────────────────────────
 
-async function scrapeTabelle() {
-  console.log(`[${new Date().toISOString()}] DEL Tabelle: Scraping...`);
-  let b;
-  try {
-    b = await getBrowser();
-    const page = await b.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto('https://www.eisbaerlin.de/del-tabelle', { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 1500));
-    const $ = cheerio.load(await page.content());
-    const eintraege = [];
+// Deutsche Teamnamen — SofaScore liefert englische Namen
+const DEL_NAMEN = {
+  'Adler Mannheim':               'Adler Mannheim',
+  'Augsburger Panther':           'Augsburger Panther',
+  'Düsseldorfer EG':              'Düsseldorfer EG',
+  'Duesseldorfer EG':             'Düsseldorfer EG',
+  'Eisbären Berlin':              'Eisbären Berlin',
+  'Eisbaeren Berlin':             'Eisbären Berlin',
+  'ERC Ingolstadt':               'ERC Ingolstadt',
+  'Fischtown Pinguins Bremerhaven': 'Fischtown Pinguins',
+  'Fischtown Pinguins':           'Fischtown Pinguins',
+  'Grizzlys Wolfsburg':           'Grizzlys Wolfsburg',
+  'Iserlohn Roosters':            'Iserlohn Roosters',
+  'Kölner Haie':                  'Kölner Haie',
+  'Koelner Haie':                 'Kölner Haie',
+  'Cologne Sharks':               'Kölner Haie',
+  'Krefeld Pinguine':             'Krefeld Pinguine',
+  'Löwen Frankfurt':              'Löwen Frankfurt',
+  'Loewen Frankfurt':             'Löwen Frankfurt',
+  'Frankfurt Lions':              'Löwen Frankfurt',
+  'Nuremberg Ice Tigers':         'Nürnberg Ice Tigers',
+  'Nuernberg Ice Tigers':         'Nürnberg Ice Tigers',
+  'Nürnberg Ice Tigers':          'Nürnberg Ice Tigers',
+  'Red Bull München':             'Red Bull München',
+  'Red Bull Muenchen':            'Red Bull München',
+  'EHC Red Bull München':         'Red Bull München',
+  'Schwenninger Wild Wings':      'Schwenninger Wild Wings',
+  'Straubing Tigers':             'Straubing Tigers',
+};
 
-    $('table tbody tr').each((i, tr) => {
-      const cells = $(tr).find('td').toArray();
-      if (cells.length < 8) return;
-      const getText = idx => $(cells[idx]).text().trim();
-      const toInt   = v  => parseInt(v.replace(/[^\d-]/g, '')) || 0;
-      const rang    = i + 1;
-      const team    = getText(1) || getText(0);
-      const punkte  = toInt(getText(cells.length - 1));
-      const spiele  = toInt(getText(2));
-      if (!team || team.length < 2) return;
-      eintraege.push({
-        rang,
-        team,
-        spiele,
-        siege: toInt(getText(3)),
-        otSiege: toInt(getText(4)),
-        otNiederlagen: toInt(getText(5)),
-        niederlagen: toInt(getText(6)),
-        torePlus: 0,
-        toreMinus: 0,
-        punkte,
-        istEigenesMannschaft: team.toLowerCase().includes('frankfurt')
-      });
+function deutscherName(englisch) {
+  return DEL_NAMEN[englisch] || englisch;
+}
+
+// SofaScore Tournament-ID für DEL: 225
+// Season-ID wird automatisch ermittelt
+let sofaSeasonId = null;
+
+async function holeSofaSeasonId() {
+  try {
+    const res = await fetch('https://api.sofascore.com/api/v1/tournament/225/seasons', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Accept': 'application/json',
+        'Referer': 'https://www.sofascore.com/'
+      }
+    });
+    const data = await res.json();
+    // Neueste Season = erste in der Liste
+    sofaSeasonId = data.seasons?.[0]?.id || null;
+    console.log(`[SofaScore] Season-ID: ${sofaSeasonId}`);
+    return sofaSeasonId;
+  } catch (err) {
+    console.error('[SofaScore] Season-ID Fehler:', err.message);
+    return null;
+  }
+}
+
+async function scrapeTabelle() {
+  console.log(`[${new Date().toISOString()}] DEL Tabelle: Lade via SofaScore...`);
+  try {
+    // Season-ID holen falls noch nicht bekannt
+    if (!sofaSeasonId) await holeSofaSeasonId();
+    if (!sofaSeasonId) throw new Error('Keine Season-ID verfügbar');
+
+    const url = `https://api.sofascore.com/api/v1/tournament/225/season/${sofaSeasonId}/standings/total`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Accept': 'application/json',
+        'Referer': 'https://www.sofascore.com/'
+      }
     });
 
-    await page.close();
-    await b.close();
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
 
-    if (eintraege.length >= 8) {
-      tabelleCache = eintraege;
-      tabelleLastUpdated = new Date().toISOString();
-      await speichereTabelleInDB(eintraege);
-      console.log(`[OK] Tabelle: ${eintraege.length} Teams.`);
-    }
+    // SofaScore liefert: standings[0].rows[]
+    const rows = data.standings?.[0]?.rows || [];
+    if (rows.length < 8) throw new Error('Zu wenige Einträge: ' + rows.length);
+
+    const eintraege = rows.map((r, i) => {
+      const englisch = r.team?.name || '';
+      const name = deutscherName(englisch);
+      return {
+        rang:                i + 1,
+        team:               name,
+        spiele:             r.matches || 0,
+        siege:              r.wins || 0,
+        otSiege:            r.overtimeWins || 0,
+        otNiederlagen:      r.overtimeLosses || 0,
+        niederlagen:        r.losses || 0,
+        torePlus:           r.scoresFor || 0,
+        toreMinus:          r.scoresAgainst || 0,
+        punkte:             r.points || 0,
+        istEigenesMannschaft: name.toLowerCase().includes('frankfurt') || name.toLowerCase().includes('löwen')
+      };
+    });
+
+    tabelleCache = eintraege;
+    tabelleLastUpdated = new Date().toISOString();
+    await speichereTabelleInDB(eintraege);
+    console.log(`[OK] Tabelle via SofaScore: ${eintraege.length} Teams.`);
+
   } catch (err) {
-    console.error('[FEHLER] Tabelle:', err.message);
-    if (b) try { await b.close(); } catch (_) {}
+    console.error('[FEHLER] Tabelle SofaScore:', err.message);
+    // Fallback: DB-Cache bleibt erhalten
   }
 }
 

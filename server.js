@@ -449,6 +449,52 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
+// TEMP DEBUG: Teste RSS-Feeds + HTML-Pagination
+app.get('/api/debug/feeds', async (req, res) => {
+  const axios = require('axios');
+  const results = [];
+
+  const urls = [
+    // TYPO3 typische RSS-Feed URLs
+    'https://www.loewen-frankfurt.de/?type=9818',
+    'https://www.loewen-frankfurt.de/?type=100',
+    'https://www.loewen-frankfurt.de/rss.xml',
+    'https://www.loewen-frankfurt.de/feed.xml',
+    'https://www.loewen-frankfurt.de/saison/aktuelles/?type=9818',
+    // Pagination-Test: TYPO3 currentPage
+    'https://www.loewen-frankfurt.de/saison/aktuelles?tx_news_pi1%5BcurrentPage%5D=1&tx_news_pi1%5Baction%5D=list&tx_news_pi1%5Bcontroller%5D=News',
+    // Pagination-Test: einfache Seitennummer
+    'https://www.loewen-frankfurt.de/saison/aktuelles?page=2',
+    'https://www.loewen-frankfurt.de/saison/aktuelles?p=2',
+  ];
+
+  for (const url of urls) {
+    try {
+      const resp = await axios.get(url, {
+        timeout: 8000,
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        maxRedirects: 3,
+        validateStatus: s => s < 500
+      });
+      const body = resp.data.toString().slice(0, 500);
+      const isRss = body.includes('<rss') || body.includes('<feed') || body.includes('<?xml');
+      // Zähle Artikel-Links auf HTML-Seiten
+      const artikelMatches = (body.match(/\/saison\/aktuelles\//g) || []).length;
+      results.push({
+        url,
+        status: resp.status,
+        isRss,
+        artikelLinks: artikelMatches,
+        preview: body.slice(0, 200)
+      });
+    } catch (err) {
+      results.push({ url, error: err.message });
+    }
+  }
+
+  res.json(results);
+});
+
 app.post('/api/admin/reset', async (req, res) => {
   try {
     await leereDatenbank();

@@ -221,44 +221,73 @@ async function scrapeNewsSeite(page, seite) {
 // ─────────────────────────────────────────────
 
 async function scrapeNewsVollscan() {
-  console.log(`[${new Date().toISOString()}] Lowen News: Vollscan (alle Seiten)...`);
+  console.log(`[${new Date().toISOString()}] Lowen News: Vollscan (Load More)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 2000));
 
-    let allItems = [];
-    let seite = 1;
-    const maxSeiten = 20;
-
-    while (seite <= maxSeiten) {
-      const seiteItems = await scrapeNewsSeite(page, seite);
-      if (seiteItems.length === 0) break; // Seite leer = wirklich Ende
-      allItems = allItems.concat(seiteItems);
-      seite++;
+    // Bis zu 20x auf "Mehr laden" / "Load More" klicken
+    let klicks = 0;
+    const maxKlicks = 20;
+    while (klicks < maxKlicks) {
+      // Verschiedene Selektoren fuer "Mehr laden" Button probieren
+      const btn = await page.$('button[class*="more"], a[class*="more"], button[class*="load"], .load-more, .mehr-laden, [class*="pagination"] a.next, .news-list-pager a');
+      if (!btn) {
+        console.log(`    [news] Kein "Mehr laden" Button gefunden nach ${klicks} Klicks`);
+        break;
+      }
+      await btn.click();
+      klicks++;
+      console.log(`    [news] Klick ${klicks} auf Mehr-laden`);
+      await new Promise(r => setTimeout(r, 2000));
     }
 
-    // Duplikate entfernen
-    const uniqueItems = allItems.filter((item, index, self) =>
-      index === self.findIndex(x => x.url === item.url)
-    );
+    const $ = cheerio.load(await page.content());
+    const allItems = [];
 
-    const neueArtikel = uniqueItems.filter(item => !newsCache.find(c => c.url === item.url));
+    $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+      const href = $(el).attr('href') || '';
+      const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
+      const normHref = href.replace(/\/$/, '');
+      if (katPfade.includes(normHref)) return;
+      if (!href.includes('/saison/aktuelles/')) return;
+      const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+      if (allItems.find(x => x.url === fullUrl)) return;
+      let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim();
+      if (!titel) titel = $(el).clone().children().remove().end().text().trim();
+      if (!titel) titel = $(el).text().trim();
+      titel = titel.replace(/\s+/g, ' ').trim();
+      if (titel.length < 8) return;
+      let datum = '';
+      const container = $(el).closest('article, li, div');
+      const datumMatch = container.text().match(/(\d{2}\.\d{2}\.\d{4})/);
+      if (datumMatch) datum = datumMatch[1];
+      allItems.push({
+        id:      Buffer.from(fullUrl).toString('base64').slice(-32),
+        titel,
+        url:     fullUrl,
+        datum,
+        quelle:  'Loewen Frankfurt',
+        bildUrl: ''
+      });
+    });
 
-    await speichereNewsInDB(uniqueItems);
-    newsCache = uniqueItems;
+    const neueArtikel = allItems.filter(item => !newsCache.find(c => c.url === item.url));
+    await speichereNewsInDB(allItems);
+    newsCache = allItems;
     lastUpdated = new Date().toISOString();
-    letzterNewsCount = uniqueItems.length;
-
+    letzterNewsCount = allItems.length;
     if (neueArtikel.length > 0) {
       console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`);
       neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
     }
-
     await page.close();
     await b.close();
-    console.log(`[OK] Vollscan: ${uniqueItems.length} Artikel aus ${seite} Seiten.`);
+    console.log(`[OK] Vollscan: ${allItems.length} Artikel nach ${klicks} Klicks.`);
   } catch (err) {
     console.error('[FEHLER] Vollscan:', err.message);
     if (b) try { await b.close(); } catch (_) {}

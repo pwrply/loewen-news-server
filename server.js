@@ -289,6 +289,15 @@ async function scrapeNewsSchnell() {
   console.log(`[${new Date().toISOString()}] Schnell-Check Seite 1...`);
   let b;
   try {
+    // 1. Erst bekannte URLs aus DB laden (immer aktuell, auch nach Neustart)
+    const bekannteUrls = new Set(newsCache.map(n => n.url));
+    if (DB_AKTIV && bekannteUrls.size === 0) {
+      const dbRows = await pool.query('SELECT url FROM news');
+      dbRows.rows.forEach(r => bekannteUrls.add(r.url));
+      console.log(`[Schnell-Check] DB-Check: ${bekannteUrls.size} bekannte URLs`);
+    }
+
+    // 2. Seite 1 scrapen
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
@@ -322,7 +331,8 @@ async function scrapeNewsSchnell() {
       });
     });
 
-    const neueArtikel = items.filter(item => !newsCache.find(c => c.url === item.url));
+    // 3. Nur wirklich neue URLs (gegen DB-Set prüfen)
+    const neueArtikel = items.filter(item => !bekannteUrls.has(item.url));
     if (neueArtikel.length > 0) {
       console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`);
       neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
@@ -330,7 +340,7 @@ async function scrapeNewsSchnell() {
       newsCache = [...neueArtikel, ...newsCache];
       lastUpdated = new Date().toISOString();
     } else {
-      console.log('[OK] Keine neuen Artikel.');
+      console.log(`[OK] Keine neuen Artikel. (${items.length} auf Seite 1 geprüft)`);
     }
     await page.close();
     await b.close();

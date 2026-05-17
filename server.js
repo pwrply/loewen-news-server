@@ -149,7 +149,7 @@ let dbBereit           = false;
 let letzterNewsCount   = 0;
 
 // ─────────────────────────────────────────────
-// MARK: - Browser
+// MARK: - Browser + Hilfsfunktion
 // ─────────────────────────────────────────────
 
 function parseDate(str) {
@@ -167,76 +167,26 @@ async function getBrowser() {
 }
 
 // ─────────────────────────────────────────────
-// MARK: - News Scraper (eine Seite)
-// ─────────────────────────────────────────────
-
-async function scrapeNewsSeite(page, seite) {
-  // Seite 1 = keine Parameter, Seite 2+ = ?tx_news_pi1%5BcurrentPage%5D=X (TYPO3 Standard)
-  const url = seite === 1
-    ? NEWS_URL
-    : `${NEWS_URL}?tx_news_pi1%5BcurrentPage%5D=${seite - 1}&tx_news_pi1%5Baction%5D=list&tx_news_pi1%5Bcontroller%5D=News`;
-  console.log(`    [news] Seite ${seite}: ${url}`);
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  await new Promise(r => setTimeout(r, 2000));
-  const $ = cheerio.load(await page.content());
-  const items = [];
-
-  $('a[href*="/saison/aktuelles/"]').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
-    const normHref = href.replace(/\/$/, '');
-    if (katPfade.includes(normHref)) return;
-    if (!href.includes('/saison/aktuelles/')) return;
-
-    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-    if (items.find(x => x.url === fullUrl)) return;
-
-    let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim();
-    if (!titel) titel = $(el).clone().children().remove().end().text().trim();
-    if (!titel) titel = $(el).text().trim();
-    titel = titel.replace(/\s+/g, ' ').trim();
-    if (titel.length < 8) return;
-
-    let datum = '';
-    const container = $(el).closest('article, li, div');
-    const datumMatch = container.text().match(/(\d{2}\.\d{2}\.\d{4})/);
-    if (datumMatch) datum = datumMatch[1];
-
-    items.push({
-      id:      Buffer.from(fullUrl).toString('base64').slice(-32),
-      titel:   titel,
-      url:     fullUrl,
-      datum:   datum,
-      quelle:  'Löwen Frankfurt',
-      bildUrl: ''
-    });
-  });
-
-  console.log(`    [news] Seite ${seite}: ${items.length} Artikel gefunden`);
-  return items;
-}
-
-// ─────────────────────────────────────────────
-// MARK: - Vollscan (alle Seiten, beim Start)
+// MARK: - Vollscan (alle 20 Seiten, beim Start)
 // ─────────────────────────────────────────────
 
 async function scrapeNewsVollscan() {
-  console.log(`[${new Date().toISOString()}] Lowen News: Vollscan (Navigation per Klick)...`);
+  console.log(`[${new Date().toISOString()}] Loewen News: Vollscan (20 Seiten)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 2000));
 
     let allItems = [];
-    let seite = 1;
     const maxSeiten = 20;
 
-    while (seite <= maxSeiten) {
-      const html = await page.content();
-      const $ = cheerio.load(html);
+    for (let seite = 1; seite <= maxSeiten; seite++) {
+      const url = seite === 1 ? NEWS_URL : `${NEWS_URL}?p${seite}`;
+      console.log(`    [news] Seite ${seille}: ${url}`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await new Promise(r => setTimeout(r, 2000));
+      const $ = cheerio.load(await page.content());
       const pageItems = [];
 
       $('a[href*="/saison/aktuelles/"]').each((i, el) => {
@@ -254,39 +204,22 @@ async function scrapeNewsVollscan() {
         let datum = '';
         const datumMatch = $(el).closest('article, li, div').text().match(/(\d{2}\.\d{2}\.\d{4})/);
         if (datumMatch) datum = datumMatch[1];
-        pageItems.push({ id: Buffer.from(fullUrl).toString('base64').slice(-32), titel, url: fullUrl, datum, quelle: 'L\u00f6wen Frankfurt', bildUrl: '' });
+        pageItems.push({
+          id: Buffer.from(fullUrl).toString('base64').slice(-32),
+          titel,
+          url: fullUrl,
+          datum,
+          quelle: 'Löwen Frankfurt',
+          bildUrl: ''
+        });
       });
 
       const vorher = allItems.length;
       for (const item of pageItems) {
         if (!allItems.find(x => x.url === item.url)) allItems.push(item);
       }
-      console.log(`    [news] Seite ${seite}: ${pageItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
-
-      // Naechste Seite: suche Pagination-Link
-      const nextLink = await page.$('a.next, a[rel="next"], .pagination a:last-child, .news-list-pager a:last-child, [class*="pagination"] a:last-child, [aria-label="Next"], [aria-label="Weiter"]');
-      if (!nextLink) {
-        // Fallback: suche Link mit Pfeil oder "Weiter"
-        const allLinks = await page.$$('a');
-        let found = false;
-        for (const link of allLinks) {
-          const text = await page.evaluate(el => el.textContent.trim(), link);
-          if (text === '>' || text === '>>' || text.includes('Weiter') || text.includes('next')) {
-            await link.click();
-            await new Promise(r => setTimeout(r, 2000));
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          console.log(`    [news] Keine naechste Seite gefunden nach Seite ${seite}`);
-          break;
-        }
-      } else {
-        await nextLink.click();
-        await new Promise(r => setTimeout(r, 2000));
-      }
-      seite++;
+      console.log(`    [news] Seite ${seille}: ${pageItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
+      if (pageItems.length === 0) break;
     }
 
     const neueArtikel = allItems.filter(item => !newsCache.find(c => c.url === item.url));
@@ -300,7 +233,7 @@ async function scrapeNewsVollscan() {
     }
     await page.close();
     await b.close();
-    console.log(`[OK] Vollscan: ${allItems.length} Artikel aus ${seite} Seiten.`);
+    console.log(`[OK] Vollscan: ${allItems.length} Artikel.`);
   } catch (err) {
     console.error('[FEHLER] Vollscan:', err.message);
     if (b) try { await b.close(); } catch (_) {}
@@ -318,10 +251,37 @@ async function scrapeNewsSchnell() {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 2000));
+    const $ = cheerio.load(await page.content());
+    const items = [];
 
-    const items = await scrapeNewsSeite(page, 1);
+    $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+      const href = $(el).attr('href') || '';
+      const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
+      if (katPfade.includes(href.replace(/\/$/, ''))) return;
+      if (!href.includes('/saison/aktuelles/')) return;
+      const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+      if (items.find(x => x.url === fullUrl)) return;
+      let titel = $(el).find('h2, h3, h4, [class*="title"]').first().text().trim();
+      if (!titel) titel = $(el).clone().children().remove().end().text().trim();
+      if (!titel) titel = $(el).text().trim();
+      titel = titel.replace(/\s+/g, ' ').trim();
+      if (titel.length < 8) return;
+      let datum = '';
+      const datumMatch = $(el).closest('article').text().match(/(\d{2}\.\d{2}\.\d{4})/);
+      if (datumMatch) datum = datumMatch[1];
+      items.push({
+        id: Buffer.from(fullUrl).toString('base64').slice(-32),
+        titel,
+        url: fullUrl,
+        datum,
+        quelle: 'Löwen Frankfurt',
+        bildUrl: ''
+      });
+    });
+
     const neueArtikel = items.filter(item => !newsCache.find(c => c.url === item.url));
-
     if (neueArtikel.length > 0) {
       console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`);
       neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
@@ -331,7 +291,6 @@ async function scrapeNewsSchnell() {
     } else {
       console.log('[OK] Keine neuen Artikel.');
     }
-
     await page.close();
     await b.close();
   } catch (err) {
@@ -353,7 +312,6 @@ async function scrapeTabelle() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     await page.goto('https://www.eisbaerlin.de/del-tabelle', { waitUntil: 'domcontentloaded', timeout: 20000 });
     await new Promise(r => setTimeout(r, 1500));
-
     const $ = cheerio.load(await page.content());
     const eintraege = [];
 
@@ -371,12 +329,12 @@ async function scrapeTabelle() {
         rang,
         team,
         spiele,
-        siege:                toInt(getText(3)),
-        otSiege:              toInt(getText(4)),
-        otNiederlagen:        toInt(getText(5)),
-        niederlagen:          toInt(getText(6)),
-        torePlus:             0,
-        toreMinus:            0,
+        siege: toInt(getText(3)),
+        otSiege: toInt(getText(4)),
+        otNiederlagen: toInt(getText(5)),
+        niederlagen: toInt(getText(6)),
+        torePlus: 0,
+        toreMinus: 0,
         punkte,
         istEigenesMannschaft: team.toLowerCase().includes('frankfurt')
       });
@@ -386,7 +344,7 @@ async function scrapeTabelle() {
     await b.close();
 
     if (eintraege.length >= 8) {
-      tabelleCache       = eintraege;
+      tabelleCache = eintraege;
       tabelleLastUpdated = new Date().toISOString();
       await speichereTabelleInDB(eintraege);
       console.log(`[OK] Tabelle: ${eintraege.length} Teams.`);
@@ -419,7 +377,6 @@ app.get('/api/article', async (req, res) => {
     const html = await page.content();
     await page.close();
     await b.close();
-
     const $ = cheerio.load(html);
     const titel = $('h1').first().text().trim() || $('meta[property="og:title"]').attr('content') || '';
     let datum = '';
@@ -449,12 +406,7 @@ app.get('/api/tabelle', (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
-  res.json({
-    dbAktiv: DB_AKTIV,
-    dbBereit,
-    loewen:  { count: newsCache.length, lastUpdated },
-    tabelle: { count: tabelleCache.length, lastUpdated: tabelleLastUpdated }
-  });
+  res.json({ dbAktiv: DB_AKTIV, dbBereit, loewen: { count: newsCache.length, lastUpdated }, tabelle: { count: tabelleCache.length, lastUpdated: tabelleLastUpdated } });
 });
 
 app.get('/api/health', (req, res) => {
@@ -464,9 +416,9 @@ app.get('/api/health', (req, res) => {
 app.post('/api/admin/reset', async (req, res) => {
   try {
     await leereDatenbank();
-    newsCache    = [];
+    newsCache = [];
     tabelleCache = [];
-    lastUpdated  = null;
+    lastUpdated = null;
     letzterNewsCount = 0;
     res.json({ ok: true, message: 'DB geleert. Vollscan startet...' });
     scrapeNewsVollscan();
@@ -477,11 +429,7 @@ app.post('/api/admin/reset', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.json({
-    name:    'Loewen Frankfurt News API',
-    version: '9.0.0',
-    routes:  ['/api/news', '/api/article', '/api/tabelle', '/api/status', '/api/health']
-  });
+  res.json({ name: 'Loewen Frankfurt News API', version: '10.0.0', routes: ['/api/news', '/api/article', '/api/tabelle', '/api/status', '/api/health'] });
 });
 
 // ─────────────────────────────────────────────
@@ -494,15 +442,9 @@ async function startServer() {
   await ladeTabelleAusDB();
   dbBereit = true;
   console.log('[START] DB bereit — starte Vollscan...');
-
-  // Beim Start: alle Seiten scrapen
   scrapeNewsVollscan();
   scrapeTabelle();
-
-  // Alle 5 Minuten: nur Seite 1 pruefen
   setInterval(() => { scrapeNewsSchnell(); }, 5 * 60 * 1000);
-
-  // Tabelle alle 60 Minuten aktualisieren
   setInterval(() => { scrapeTabelle(); }, 60 * 60 * 1000);
 }
 

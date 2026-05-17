@@ -5,6 +5,8 @@ const cors       = require('cors');
 const { Pool }   = require('pg');
 
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
+const BASE_URL    = 'https://www.loewen-frankfurt.de';
+const NEWS_URL    = 'https://www.loewen-frankfurt.de/saison/aktuelles';
 
 const app = express();
 app.use(cors());
@@ -12,7 +14,7 @@ app.use(express.json());
 
 // ─────────────────────────────────────────────
 // MARK: - Datenbank
-// ──────���──────────────────────────────────────
+// ─────────────────────────────────────────────
 
 const DB_AKTIV = !!process.env.DATABASE_URL;
 
@@ -69,7 +71,7 @@ async function ladeNewsAusDB() {
     quelle:  r.quelle,
     bildUrl: r.bild_url || ''
   }));
-  console.log(`[DB] ${newsCache.length} Löwen Artikel geladen.`);
+  console.log(`[DB] ${newsCache.length} Artikel geladen.`);
 }
 
 async function ladeTabelleAusDB() {
@@ -90,7 +92,7 @@ async function ladeTabelleAusDB() {
       istEigenesMannschaft: r.ist_eigene_mannschaft
     }));
     tabelleLastUpdated = result.rows[0]?.aktualisiert_am?.toISOString() || null;
-    console.log(`[DB] ${tabelleCache.length} Tabelleneinträ°¡ge geladen.`);
+    console.log(`[DB] ${tabelleCache.length} Tabelleneintraege geladen.`);
   }
 }
 
@@ -147,39 +149,34 @@ let dbBereit           = false;
 let letzterNewsCount   = 0;
 
 // ─────────────────────────────────────────────
-// MARK: - Hilfsfunktionen
+// MARK: - Browser
 // ─────────────────────────────────────────────
 
-const BASE_URL = 'https://www.loewen-frankfurt.de';
-const NEWS_URL = `${BASE_URL}/saison/aktuelles`;
-
-const parseDate = d => {
-  if (!d) return 0;
-  const [day, month, year] = d.split('.');
-  return new Date(`${year}-${month}-${day}`).getTime() || 0;
-};
+function parseDate(str) {
+  if (!str) return 0;
+  const [d, m, y] = str.split('.');
+  return new Date(`${y}-${m}-${d}`).getTime() || 0;
+}
 
 async function getBrowser() {
-  return await puppeteer.launch({
+  return puppeteer.launch({
     executablePath: CHROME_PATH,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
-           '--disable-gpu','--single-process','--memory-pressure-off','--max_old_space_size=256'],
-    headless: true
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
   });
 }
 
 // ─────────────────────────────────────────────
-// MARK: - News Scraper (nur Hauptseite, keine Kategorien)
+// MARK: - News Scraper (eine Seite)
 // ─────────────────────────────────────────────
 
-async function scrapeNews(page) {
-  const url = NEWS_URL;
-  console.log(`    [news] ${url}`);
-  const items = [];
+async function scrapeNewsSeite(page, seite) {
+  const url = seite === 1 ? NEWS_URL : `${NEWS_URL}?tx_news_pi1[currentPage]=${seite - 1}`;
+  console.log(`    [news] Seite ${seite}: ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await new Promise(r => setTimeout(r, 2000));
-  const html = await page.content();
-  const $ = cheerio.load(html);
+  const $ = cheerio.load(await page.content());
+  const items = [];
 
   $('a[href*="/saison/aktuelles/"]').each((i, el) => {
     const href = $(el).attr('href') || '';
@@ -207,127 +204,100 @@ async function scrapeNews(page) {
       titel:   titel,
       url:     fullUrl,
       datum:   datum,
-      quelle:  '',
+      quelle:  'Loewen Frankfurt',
       bildUrl: ''
     });
   });
 
-  console.log(`    [news] ${items.length} Artikel gefunden`);
+  console.log(`    [news] Seite ${seite}: ${items.length} Artikel gefunden`);
   return items;
 }
 
+// ─────────────────────────────────────────────
+// MARK: - Vollscan (alle Seiten, beim Start)
+// ─────────────────────────────────────────────
+
 async function scrapeNewsVollscan() {
-  console.log(`[${new Date().toISOString()}] Löwen News: Vollscan (alle Seiten)...`);
+  console.log(`[${new Date().toISOString()}] Lowen News: Vollscan (alle Seiten)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    
-    // Alle Seiten scrapen
-    let allItems = []
-    let currentPage = 1
-    const maxPages = 10
-    
-    while (currentPage <= maxPages) {
-      const url = `${NEWS_URL}?page=${currentPage}`
-      console.log(`    [news] Seite ${currentPage}: ${url}`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await new Promise(r => setTimeout(r, 2000));
-      
-      const $ = cheerio.load(await page.content())
-      const pageItems = []
-      
-      $('a[href*="/saison/aktuelles/"]').each((i, el) => {
-        const href = $(el).attr('href') || ''
-        const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans']
-        const normHref = href.replace(/\/$/, '')
-        if (katPfade.includes(normHref)) return
-        if (!href.includes('/saison/aktuelles/')) return
-        
-        const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`
-        if (pageItems.find(x => x.url === fullUrl)) return
-        
-        let titel = $(el).find('h2, h3, h4, .title, .headline, [class*="title"], [class*="headline"]').first().text().trim()
-        if (!titel) titel = $(el).clone().children().remove().end().text().trim()
-        if (!titel) titel = $(el).text().trim()
-        titel = titel.replace(/\s+/g, ' ').trim()
-        if (titel.length < 8) return
-        
-        let datum = ''
-        const container = $(el).closest('article, li, div')
-        const datumMatch = container.text().match(/(\d{2}\.\d{2}\.\d{4})/)
-        if (datumMatch) datum = datumMatch[1]
-        
-        pageItems.push({
-          id: Buffer.from(fullUrl).toString('base64').slice(-32),
-          titel,
-          url: fullUrl,
-          datum,
-          quelle: '',
-          bildUrl: ''
-        })
-      })
-      
-      console.log(`    [news] Seite ${currentPage}: ${pageItems.length} Artikel`);
-      allItems = allItems.concat(pageItems)
-      
-      // Wenn weniger als 20 Artikel, keine weitere Seite
-      if (pageItems.length < 20) break
-      
-      currentPage++
+
+    let allItems = [];
+    let seite = 1;
+    const maxSeiten = 15;
+
+    while (seite <= maxSeiten) {
+      const seiteItems = await scrapeNewsSeite(page, seite);
+      if (seiteItems.length === 0) break;
+      allItems = allItems.concat(seiteItems);
+      if (seiteItems.length < 10) break; // letzte Seite
+      seite++;
     }
-    
-    // Neue Artikel erkennen für Push-Notification
-    const neueArtikel = allItems.filter(item => !newsCache.find(c => c.url === item.url))
-    
-    await speichereNewsInDB(allItems)
-    newsCache = allItems
-    lastUpdated = new Date().toISOString()
-    
-    // Push-Notification bei neuen Artikeln
-    if (neueArtikel.length > 0) {
-      console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`)
-      neueArtikel.forEach(n => console.log(`  - ${n.titel}`))
-    }
-    
-    await page.close()
-    await b.close()
-    
-    letzterNewsCount = allItems.length
-    console.log(`[OK] Löwen News: ${allItems.length} Artikel aus ${currentPage} Seiten.`)
-  } catch(err) {
-    console.error('[FEHLER] Löwen News:', err.message)
-    if (b) try { await b.close(); } catch(_) {}
-  }
-}
-    
-    // Neue Artikel erkennen für Push-Notification
-    const neueArtikel = items.filter(item => !newsCache.find(c => c.url === item.url));
-    
-    await speichereNewsInDB(items);
-    newsCache = items;
+
+    // Duplikate entfernen
+    const uniqueItems = allItems.filter((item, index, self) =>
+      index === self.findIndex(x => x.url === item.url)
+    );
+
+    const neueArtikel = uniqueItems.filter(item => !newsCache.find(c => c.url === item.url));
+
+    await speichereNewsInDB(uniqueItems);
+    newsCache = uniqueItems;
     lastUpdated = new Date().toISOString();
-    
-    // Push-Notification bei neuen Artikeln
+    letzterNewsCount = uniqueItems.length;
+
     if (neueArtikel.length > 0) {
       console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`);
       neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
     }
-    
+
     await page.close();
     await b.close();
-    
-    letzterNewsCount = items.length;
-    console.log(`[OK] Löwen News: ${items.length} Artikel.`);
-  } catch(err) {
-    console.error('[FEHLER] Löwen News:', err.message);
-    if (b) try { await b.close(); } catch(_) {}
+    console.log(`[OK] Vollscan: ${uniqueItems.length} Artikel aus ${seite} Seiten.`);
+  } catch (err) {
+    console.error('[FEHLER] Vollscan:', err.message);
+    if (b) try { await b.close(); } catch (_) {}
   }
 }
 
 // ─────────────────────────────────────────────
-// MARK: - DEL Tabelle Scraper
+// MARK: - Schnell-Check (alle 5 Min, nur Seite 1)
+// ─────────────────────────────────────────────
+
+async function scrapeNewsSchnell() {
+  console.log(`[${new Date().toISOString()}] Schnell-Check Seite 1...`);
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+
+    const items = await scrapeNewsSeite(page, 1);
+    const neueArtikel = items.filter(item => !newsCache.find(c => c.url === item.url));
+
+    if (neueArtikel.length > 0) {
+      console.log(`[PUSH] ${neueArtikel.length} neue Artikel!`);
+      neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
+      await speichereNewsInDB(neueArtikel);
+      newsCache = [...neueArtikel, ...newsCache];
+      lastUpdated = new Date().toISOString();
+    } else {
+      console.log('[OK] Keine neuen Artikel.');
+    }
+
+    await page.close();
+    await b.close();
+  } catch (err) {
+    console.error('[FEHLER] Schnell-Check:', err.message);
+    if (b) try { await b.close(); } catch (_) {}
+  }
+}
+
+// ─────────────────────────────────────────────
+// MARK: - Tabelle Scraper
 // ─────────────────────────────────────────────
 
 async function scrapeTabelle() {
@@ -339,49 +309,47 @@ async function scrapeTabelle() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     await page.goto('https://www.eisbaerlin.de/del-tabelle', { waitUntil: 'domcontentloaded', timeout: 20000 });
     await new Promise(r => setTimeout(r, 1500));
-    
+
     const $ = cheerio.load(await page.content());
     const eintraege = [];
-    
+
     $('table tbody tr').each((i, tr) => {
       const cells = $(tr).find('td').toArray();
       if (cells.length < 8) return;
-      
       const getText = idx => $(cells[idx]).text().trim();
-      const toInt = v => parseInt(v.replace(/[^\d-]/g, '')) || 0;
+      const toInt   = v  => parseInt(v.replace(/[^\d-]/g, '')) || 0;
       const rang    = i + 1;
       const team    = getText(1) || getText(0);
       const punkte  = toInt(getText(cells.length - 1));
       const spiele  = toInt(getText(2));
       if (!team || team.length < 2) return;
-      
       eintraege.push({
         rang,
-        team:                team,
-        spiele:              spiele,
-        siege:               toInt(getText(3)),
-        otSiege:             toInt(getText(4)),
-        otNiederlagen:       toInt(getText(5)),
-        niederlagen:         toInt(getText(6)),
-        torePlus:            0,
-        toreMinus:           0,
-        punkte:              punkte,
-        istEigenesMannschaft: team.toLowerCase().includes('lö¨ııwen frankfurt')
+        team,
+        spiele,
+        siege:                toInt(getText(3)),
+        otSiege:              toInt(getText(4)),
+        otNiederlagen:        toInt(getText(5)),
+        niederlagen:          toInt(getText(6)),
+        torePlus:             0,
+        toreMinus:            0,
+        punkte,
+        istEigenesMannschaft: team.toLowerCase().includes('frankfurt')
       });
     });
-    
+
     await page.close();
     await b.close();
-    
+
     if (eintraege.length >= 8) {
-      tabelleCache = eintraege;
+      tabelleCache       = eintraege;
       tabelleLastUpdated = new Date().toISOString();
       await speichereTabelleInDB(eintraege);
       console.log(`[OK] Tabelle: ${eintraege.length} Teams.`);
     }
-  } catch(err) {
+  } catch (err) {
     console.error('[FEHLER] Tabelle:', err.message);
-    if (b) try { await b.close(); } catch(_) {}
+    if (b) try { await b.close(); } catch (_) {}
   }
 }
 
@@ -391,12 +359,7 @@ async function scrapeTabelle() {
 
 app.get('/api/news', (req, res) => {
   const sorted = [...newsCache].sort((a, b) => parseDate(b.datum) - parseDate(a.datum));
-  res.json({ 
-    items: sorted, 
-    artikel: sorted, 
-    lastUpdated, 
-    count: sorted.length 
-  });
+  res.json({ items: sorted, artikel: sorted, lastUpdated, count: sorted.length });
 });
 
 app.get('/api/article', async (req, res) => {
@@ -414,42 +377,28 @@ app.get('/api/article', async (req, res) => {
     await b.close();
 
     const $ = cheerio.load(html);
-
-    // Titel
-    const titel = $('h1').first().text().trim() ||
-                  $('meta[property="og:title"]').attr('content') || '';
-
-    // Datum
+    const titel = $('h1').first().text().trim() || $('meta[property="og:title"]').attr('content') || '';
     let datum = '';
     const datumMatch = $('body').text().match(/(\d{2}\.\d{2}\.\d{4})/);
     if (datumMatch) datum = datumMatch[1];
-
-    // Bild
-    const bild = $('meta[property="og:image"]').attr('content') ||
-                 $('article img, .content img, main img').first().attr('src') || '';
-
-    // Absätze
+    const bild = $('meta[property="og:image"]').attr('content') || $('article img, main img').first().attr('src') || '';
     const absaetze = [];
     $('article p, .article-content p, .news-content p, main p, .content p').each((i, el) => {
       const text = $(el).text().trim();
       if (text.length > 40) absaetze.push(text);
     });
-
-    // Fallback: alle p-Tags
     if (absaetze.length === 0) {
       $('p').each((i, el) => {
         const text = $(el).text().trim();
         if (text.length > 40) absaetze.push(text);
       });
     }
-
     res.json({ titel, datum, bild, absaetze });
   } catch (err) {
-    if (b) try { await b.close(); } catch(_) {}
+    if (b) try { await b.close(); } catch (_) {}
     res.status(500).json({ error: err.message });
   }
 });
-
 
 app.get('/api/tabelle', (req, res) => {
   res.json({ tabelle: tabelleCache, lastUpdated: tabelleLastUpdated });
@@ -457,10 +406,10 @@ app.get('/api/tabelle', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   res.json({
-    dbAktiv:       DB_AKTIV,
+    dbAktiv: DB_AKTIV,
     dbBereit,
-    loewen:        { count: newsCache.length, lastUpdated },
-    tabelle:       { count: tabelleCache.length, lastUpdated: tabelleLastUpdated }
+    loewen:  { count: newsCache.length, lastUpdated },
+    tabelle: { count: tabelleCache.length, lastUpdated: tabelleLastUpdated }
   });
 });
 
@@ -471,23 +420,23 @@ app.get('/api/health', (req, res) => {
 app.post('/api/admin/reset', async (req, res) => {
   try {
     await leereDatenbank();
-    newsCache = [];
+    newsCache    = [];
     tabelleCache = [];
-    lastUpdated = null;
+    lastUpdated  = null;
     letzterNewsCount = 0;
     res.json({ ok: true, message: 'DB geleert. Vollscan startet...' });
     scrapeNewsVollscan();
     scrapeTabelle();
-  } catch(err) {
+  } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 app.get('/', (req, res) => {
   res.json({
-    name:    'Lö¨ııwen Frankfurt News API',
-    version: '8.0.0',
-    routes:  ['/api/news', '/api/tabelle', '/api/status', '/api/health']
+    name:    'Loewen Frankfurt News API',
+    version: '9.0.0',
+    routes:  ['/api/news', '/api/article', '/api/tabelle', '/api/status', '/api/health']
   });
 });
 
@@ -500,17 +449,22 @@ async function startServer() {
   await ladeNewsAusDB();
   await ladeTabelleAusDB();
   dbBereit = true;
-  
-  console.log('[START] Server läuft auf Port 8080');
-  console.log('[START] DB bereit — starte Scraper...');
-  
+  console.log('[START] DB bereit — starte Vollscan...');
+
+  // Beim Start: alle Seiten scrapen
   scrapeNewsVollscan();
   scrapeTabelle();
+
+  // Alle 5 Minuten: nur Seite 1 pruefen
+  setInterval(() => { scrapeNewsSchnell(); }, 5 * 60 * 1000);
+
+  // Tabelle alle 60 Minuten aktualisieren
+  setInterval(() => { scrapeTabelle(); }, 60 * 60 * 1000);
 }
 
 startServer();
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`[START] Server läuft auf Port ${PORT}`);
+  console.log(`[START] Server laeuft auf Port ${PORT}`);
 });

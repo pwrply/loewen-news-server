@@ -207,7 +207,7 @@ async function scrapeNewsSeite(page, seite) {
       titel:   titel,
       url:     fullUrl,
       datum:   datum,
-      quelle:  'Loewen Frankfurt',
+      quelle:  'Löwen Frankfurt',
       bildUrl: ''
     });
   });

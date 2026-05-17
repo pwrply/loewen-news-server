@@ -171,7 +171,10 @@ async function getBrowser() {
 // ─────────────────────────────────────────────
 
 async function scrapeNewsSeite(page, seite) {
-  const url = seite === 1 ? NEWS_URL : `${NEWS_URL}?tx_news_pi1[currentPage]=${seite - 1}`;
+  // Seite 1 = keine Parameter, Seite 2+ = ?tx_news_pi1%5BcurrentPage%5D=X (TYPO3 Standard)
+  const url = seite === 1
+    ? NEWS_URL
+    : `${NEWS_URL}?tx_news_pi1%5BcurrentPage%5D=${seite - 1}&tx_news_pi1%5Baction%5D=list&tx_news_pi1%5Bcontroller%5D=News`;
   console.log(`    [news] Seite ${seite}: ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await new Promise(r => setTimeout(r, 2000));
@@ -227,13 +230,12 @@ async function scrapeNewsVollscan() {
 
     let allItems = [];
     let seite = 1;
-    const maxSeiten = 15;
+    const maxSeiten = 20;
 
     while (seite <= maxSeiten) {
       const seiteItems = await scrapeNewsSeite(page, seite);
-      if (seiteItems.length === 0) break;
+      if (seiteItems.length === 0) break; // Seite leer = wirklich Ende
       allItems = allItems.concat(seiteItems);
-      if (seiteItems.length < 10) break; // letzte Seite
       seite++;
     }
 

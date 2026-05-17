@@ -322,6 +322,58 @@ app.get('/api/news', (req, res) => {
   });
 });
 
+app.get('/api/article', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url fehlt' });
+  let b;
+  try {
+    b = await getBrowser();
+    const page = await b.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await new Promise(r => setTimeout(r, 1500));
+    const html = await page.content();
+    await page.close();
+    await b.close();
+
+    const $ = cheerio.load(html);
+
+    // Titel
+    const titel = $('h1').first().text().trim() ||
+                  $('meta[property="og:title"]').attr('content') || '';
+
+    // Datum
+    let datum = '';
+    const datumMatch = $('body').text().match(/(\d{2}\.\d{2}\.\d{4})/);
+    if (datumMatch) datum = datumMatch[1];
+
+    // Bild
+    const bild = $('meta[property="og:image"]').attr('content') ||
+                 $('article img, .content img, main img').first().attr('src') || '';
+
+    // Absätze
+    const absaetze = [];
+    $('article p, .article-content p, .news-content p, main p, .content p').each((i, el) => {
+      const text = $(el).text().trim();
+      if (text.length > 40) absaetze.push(text);
+    });
+
+    // Fallback: alle p-Tags
+    if (absaetze.length === 0) {
+      $('p').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.length > 40) absaetze.push(text);
+      });
+    }
+
+    res.json({ titel, datum, bild, absaetze });
+  } catch (err) {
+    if (b) try { await b.close(); } catch(_) {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.get('/api/tabelle', (req, res) => {
   res.json({ tabelle: tabelleCache, lastUpdated: tabelleLastUpdated });
 });

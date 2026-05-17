@@ -413,6 +413,8 @@ async function holeSofaSeasonId() {
 }
 
 async function scrapeTabelle() {
+  console.log('[INFO] Tabelle wird jetzt direkt in der App via SofaScore geladen. Server-Scraper deaktiviert.');
+  return;
   console.log(`[${new Date().toISOString()}] DEL Tabelle: Lade via SofaScore...`);
   try {
     // Season-ID holen falls noch nicht bekannt

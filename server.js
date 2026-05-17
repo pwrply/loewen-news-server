@@ -179,11 +179,14 @@ async function scrapeNewsVollscan() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
 
     let allItems = [];
+    let seite = 1;
     const maxSeiten = 20;
 
-    for (let seite = 1; seite <= maxSeiten; seite++) {
-      const url = seite === 1 ? NEWS_URL : `${NEWS_URL}?p${seite}`;
-      console.log(`    [news] Seite ${seite}: ${url}`);
+    while (seite <= maxSeiten) {
+      const url = seite === 1
+        ? NEWS_URL
+        : `${NEWS_URL}?tx_news_pi1%5BcurrentPage%5D=${seite - 1}&tx_news_pi1%5Baction%5D=list&tx_news_pi1%5Bcontroller%5D=News`;
+      console.log(`    [news] Lade Seite ${seite}: ${url}`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await new Promise(r => setTimeout(r, 2000));
       const $ = cheerio.load(await page.content());
@@ -209,7 +212,7 @@ async function scrapeNewsVollscan() {
           titel,
           url: fullUrl,
           datum,
-          quelle: 'Löwen Frankfurt',
+          quelle: 'L\u00f6wen Frankfurt',
           bildUrl: ''
         });
       });
@@ -218,8 +221,14 @@ async function scrapeNewsVollscan() {
       for (const item of pageItems) {
         if (!allItems.find(x => x.url === item.url)) allItems.push(item);
       }
-      console.log(`    [news] Seite ${seite}: ${pageItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
-      if (pageItems.length === 0) break;
+      const neu = allItems.length - vorher;
+      console.log(`    [news] Seite ${seite}: ${pageItems.length} Artikel, ${neu} davon neu, gesamt: ${allItems.length}`);
+      // Wenn keine neuen Artikel mehr kommen -> wirklich fertig
+      if (neu === 0) {
+        console.log(`    [news] Keine neuen Artikel auf Seite ${seite} -> Stopp.`);
+        break;
+      }
+      seite++;
     }
 
     const neueArtikel = allItems.filter(item => !newsCache.find(c => c.url === item.url));

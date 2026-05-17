@@ -179,16 +179,11 @@ async function scrapeNewsVollscan() {
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
 
     let allItems = [];
-    let seite = 1;
-    const maxSeiten = 20;
+    await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 2000));
 
-    while (seite <= maxSeiten) {
-      const url = seite === 1
-        ? NEWS_URL
-        : `${NEWS_URL}?tx_news_pi1%5BcurrentPage%5D=${seite - 1}&tx_news_pi1%5Baction%5D=list&tx_news_pi1%5Bcontroller%5D=News`;
-      console.log(`    [news] Lade Seite ${seite}: ${url}`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await new Promise(r => setTimeout(r, 2000));
+    for (let seite = 1; seite <= maxSeiten; seite++) {
+      console.log(`    [news] Scraping Seite ${seite}...`);
       const $ = cheerio.load(await page.content());
       const pageItems = [];
 
@@ -223,12 +218,43 @@ async function scrapeNewsVollscan() {
       }
       const neu = allItems.length - vorher;
       console.log(`    [news] Seite ${seite}: ${pageItems.length} Artikel, ${neu} davon neu, gesamt: ${allItems.length}`);
-      // Wenn keine neuen Artikel mehr kommen -> wirklich fertig
-      if (neu === 0) {
-        console.log(`    [news] Keine neuen Artikel auf Seite ${seite} -> Stopp.`);
+
+      // Wenn keine Artikel mehr -> Stopp
+      if (pageItems.length === 0) {
+        console.log(`    [news] Keine Artikel auf Seite ${seite} -> Stopp.`);
         break;
       }
-      seite++;
+
+      // Nächste Seite klicken (Pagination-Button "2" oder ">" oder "Nächste")
+      if (seite < maxSeiten) {
+        let nextButton = null;
+        // Versuch 1: Button mit Text "2" (wenn wir auf Seite 1 sind)
+        if (seite === 1) {
+          nextButton = await page.$('a[href*=pager], li.pagination-item a:has-text("2"), .pagination a:has-text("2"), [class*="pagination"] a:has-text("2")');
+        }
+        // Versuch 2: "Nächste" oder ">" Button
+        if (!nextButton) {
+          nextButton = await page.$('a:has-text("Nächste"), a:has-text(">"), .next a, .pagination-next a');
+        }
+        // Versuch 3: Nächster pagination-Link im DOM
+        if (!nextButton) {
+          nextButton = await page.$('a[href*="/saison/aktuelles"][class*="pagination"], .pagination li.active + li a');
+        }
+
+        if (nextButton) {
+          try {
+            await nextButton.click({ timeout: 5000 });
+            await new Promise(r => setTimeout(r, 2000));
+            console.log(`    [news] Klick zu Seite ${seite + 1} erfolgreich`);
+          } catch (err) {
+            console.log(`    [news] Klick zu Seite ${seite + 1} fehlgeschlagen: ${err.message} -> Stopp`);
+            break;
+          }
+        } else {
+          console.log(`    [news] Kein Next-Button gefunden auf Seite ${seite} -> Stopp`);
+          break;
+        }
+      }
     }
 
     const neueArtikel = allItems.filter(item => !newsCache.find(c => c.url === item.url));

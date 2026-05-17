@@ -183,7 +183,7 @@ async function scrapeNewsVollscan() {
 
     for (let seite = 1; seite <= maxSeiten; seite++) {
       const url = seite === 1 ? NEWS_URL : `${NEWS_URL}?p${seite}`;
-      console.log(`    [news] Seite ${seille}: ${url}`);
+      console.log(`    [news] Seite ${seite}: ${url}`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await new Promise(r => setTimeout(r, 2000));
       const $ = cheerio.load(await page.content());
@@ -218,7 +218,7 @@ async function scrapeNewsVollscan() {
       for (const item of pageItems) {
         if (!allItems.find(x => x.url === item.url)) allItems.push(item);
       }
-      console.log(`    [news] Seite ${seille}: ${pageItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
+      console.log(`    [news] Seite ${seite}: ${pageItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
       if (pageItems.length === 0) break;
     }
 

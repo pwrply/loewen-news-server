@@ -221,26 +221,71 @@ async function scrapeNewsSeite(page, seite) {
 // ─────────────────────────────────────────────
 
 async function scrapeNewsVollscan() {
-  console.log(`[${new Date().toISOString()}] Lowen News: Vollscan (alle Seiten)...`);
+  console.log(`[${new Date().toISOString()}] Lowen News: Vollscan (Navigation per Klick)...`);
   let b;
   try {
     b = await getBrowser();
     const page = await b.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 2000));
 
     let allItems = [];
     let seite = 1;
     const maxSeiten = 20;
 
     while (seite <= maxSeiten) {
-      const seiteItems = await scrapeNewsSeite(page, seite);
-      if (seiteItems.length === 0) break;
+      const html = await page.content();
+      const $ = cheerio.load(html);
+      const pageItems = [];
+
+      $('a[href*="/saison/aktuelles/"]').each((i, el) => {
+        const href = $(el).attr('href') || '';
+        const katPfade = ['/saison/aktuelles', '/saison/aktuelles/vorschau', '/saison/aktuelles/spielberichte', '/saison/aktuelles/team', '/saison/aktuelles/fans'];
+        if (katPfade.includes(href.replace(/\/$/, ''))) return;
+        if (!href.includes('/saison/aktuelles/')) return;
+        const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+        if (pageItems.find(x => x.url === fullUrl)) return;
+        let titel = $(el).find('h2, h3, h4, [class*="title"], [class*="headline"]').first().text().trim();
+        if (!titel) titel = $(el).clone().children().remove().end().text().trim();
+        if (!titel) titel = $(el).text().trim();
+        titel = titel.replace(/\s+/g, ' ').trim();
+        if (titel.length < 8) return;
+        let datum = '';
+        const datumMatch = $(el).closest('article, li, div').text().match(/(\d{2}\.\d{2}\.\d{4})/);
+        if (datumMatch) datum = datumMatch[1];
+        pageItems.push({ id: Buffer.from(fullUrl).toString('base64').slice(-32), titel, url: fullUrl, datum, quelle: 'L\u00f6wen Frankfurt', bildUrl: '' });
+      });
+
       const vorher = allItems.length;
-      // Nur wirklich neue URLs hinzufuegen
-      for (const item of seiteItems) {
+      for (const item of pageItems) {
         if (!allItems.find(x => x.url === item.url)) allItems.push(item);
       }
-      console.log(`    [news] Seite ${seite}: ${seiteItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
+      console.log(`    [news] Seite ${seite}: ${pageItems.length} gefunden, ${allItems.length - vorher} neu, gesamt: ${allItems.length}`);
+
+      // Naechste Seite: suche Pagination-Link
+      const nextLink = await page.$('a.next, a[rel="next"], .pagination a:last-child, .news-list-pager a:last-child, [class*="pagination"] a:last-child, [aria-label="Next"], [aria-label="Weiter"]');
+      if (!nextLink) {
+        // Fallback: suche Link mit Pfeil oder "Weiter"
+        const allLinks = await page.$$('a');
+        let found = false;
+        for (const link of allLinks) {
+          const text = await page.evaluate(el => el.textContent.trim(), link);
+          if (text === '>' || text === '>>' || text.includes('Weiter') || text.includes('next')) {
+            await link.click();
+            await new Promise(r => setTimeout(r, 2000));
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          console.log(`    [news] Keine naechste Seite gefunden nach Seite ${seite}`);
+          break;
+        }
+      } else {
+        await nextLink.click();
+        await new Promise(r => setTimeout(r, 2000));
+      }
       seite++;
     }
 
@@ -255,7 +300,7 @@ async function scrapeNewsVollscan() {
     }
     await page.close();
     await b.close();
-    console.log(`[OK] Vollscan: ${allItems.length} Artikel aus ${seite - 1} Seiten.`);
+    console.log(`[OK] Vollscan: ${allItems.length} Artikel aus ${seite} Seiten.`);
   } catch (err) {
     console.error('[FEHLER] Vollscan:', err.message);
     if (b) try { await b.close(); } catch (_) {}

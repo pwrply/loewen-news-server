@@ -226,33 +226,38 @@ async function scrapeNewsVollscan() {
         break;
       }
 
-      // Nächste Seite klicken (Pagination-Button "2" oder ">" oder "Nächste")
+      // Nächste Seite klicken — per page.evaluate() um :has-text zu vermeiden
       if (seite < maxSeiten) {
-        let nextButton = null;
-        // Versuch 1: Button mit Text "2" (wenn wir auf Seite 1 sind)
-        if (seite === 1) {
-          nextButton = await page.$('a[href*=pager], li.pagination-item a:has-text("2"), .pagination a:has-text("2"), [class*="pagination"] a:has-text("2")');
-        }
-        // Versuch 2: "Nächste" oder ">" Button
-        if (!nextButton) {
-          nextButton = await page.$('a:has-text("Nächste"), a:has-text(">"), .next a, .pagination-next a');
-        }
-        // Versuch 3: Nächster pagination-Link im DOM
-        if (!nextButton) {
-          nextButton = await page.$('a[href*="/saison/aktuelles"][class*="pagination"], .pagination li.active + li a');
-        }
+        const nextHref = await page.evaluate((aktuelleSeite) => {
+          // Suche Link dessen Text eine Zahl (nächste Seite) oder Pfeil/"weiter" ist
+          const alle = [...document.querySelectorAll('a')];
+          const naechste = aktuelleSeite + 1;
 
-        if (nextButton) {
-          try {
-            await nextButton.click({ timeout: 5000 });
-            await new Promise(r => setTimeout(r, 2000));
-            console.log(`    [news] Klick zu Seite ${seite + 1} erfolgreich`);
-          } catch (err) {
-            console.log(`    [news] Klick zu Seite ${seite + 1} fehlgeschlagen: ${err.message} -> Stopp`);
-            break;
-          }
+          // Versuch 1: Link mit exakt der nächsten Seitenzahl als Text
+          const perZahl = alle.find(a => a.textContent.trim() === String(naechste));
+          if (perZahl) return perZahl.href;
+
+          // Versuch 2: Link mit "weiter", "nächste", ">" oder "»" im Text
+          const perText = alle.find(a => /weiter|nächste|next|^>$|^»$/.test(a.textContent.trim().toLowerCase()));
+          if (perText) return perText.href;
+
+          // Versuch 3: Link mit pagination-Klasse der nicht aktiv ist
+          const perKlasse = alle.find(a =>
+            a.className.match(/pag|page/i) &&
+            !a.className.match(/active|current/i) &&
+            a.href && a.href !== window.location.href
+          );
+          if (perKlasse) return perKlasse.href;
+
+          return null;
+        }, seite);
+
+        if (nextHref) {
+          console.log(`    [news] Gehe zu Seite ${seite + 1}: ${nextHref}`);
+          await page.goto(nextHref, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          await new Promise(r => setTimeout(r, 2000));
         } else {
-          console.log(`    [news] Kein Next-Button gefunden auf Seite ${seite} -> Stopp`);
+          console.log(`    [news] Kein Next-Link gefunden auf Seite ${seite} -> Stopp`);
           break;
         }
       }

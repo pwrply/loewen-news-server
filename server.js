@@ -158,12 +158,31 @@ function parseDate(str) {
   return new Date(`${y}-${m}-${d}`).getTime() || 0;
 }
 
+let _browser = null;
+
 async function getBrowser() {
-  return puppeteer.launch({
+  if (_browser) {
+    try {
+      // Prüfen ob Browser noch läuft
+      await _browser.version();
+      return _browser;
+    } catch (_) {
+      _browser = null;
+    }
+  }
+  _browser = await puppeteer.launch({
     executablePath: CHROME_PATH,
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
   });
+  return _browser;
+}
+
+async function closeBrowser() {
+  if (_browser) {
+    try { await _browser.close(); } catch (_) {}
+    _browser = null;
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -273,11 +292,11 @@ async function scrapeNewsVollscan() {
       neueArtikel.forEach(n => console.log(`  - ${n.titel}`));
     }
     await page.close();
-    await b.close();
+    // Browser wird wiederverwendet (Singleton)
     console.log(`[OK] Vollscan: ${allItems.length} Artikel.`);
   } catch (err) {
     console.error('[FEHLER] Vollscan:', err.message);
-    if (b) try { await b.close(); } catch (_) {}
+    // Browser bleibt offen (Singleton)
   }
 }
 
@@ -343,10 +362,10 @@ async function scrapeNewsSchnell() {
       console.log(`[OK] Keine neuen Artikel. (${items.length} auf Seite 1 geprüft)`);
     }
     await page.close();
-    await b.close();
+    // Browser wird wiederverwendet (Singleton)
   } catch (err) {
     console.error('[FEHLER] Schnell-Check:', err.message);
-    if (b) try { await b.close(); } catch (_) {}
+    // Browser bleibt offen (Singleton)
   }
 }
 
@@ -487,7 +506,7 @@ app.get('/api/article', async (req, res) => {
     await new Promise(r => setTimeout(r, 1500));
     const html = await page.content();
     await page.close();
-    await b.close();
+    // Browser wird wiederverwendet (Singleton)
     const $ = cheerio.load(html);
     const titel = $('h1').first().text().trim() || $('meta[property="og:title"]').attr('content') || '';
     let datum = '';
@@ -507,7 +526,7 @@ app.get('/api/article', async (req, res) => {
     }
     res.json({ titel, datum, bild, absaetze });
   } catch (err) {
-    if (b) try { await b.close(); } catch (_) {}
+    // Browser bleibt offen (Singleton)
     res.status(500).json({ error: err.message });
   }
 });
